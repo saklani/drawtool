@@ -1,6 +1,6 @@
 //! Parser for the Mermaid-style flowchart subset.
 
-use crate::model::{Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
+use crate::model::{Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
 use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
@@ -11,6 +11,13 @@ use std::sync::LazyLock;
 pub(crate) fn strip_comment(line: &str) -> &str {
     let at = line.match_indices("%%").map(|(i, _)| i).find(|&i| i > 0 && line[..i].ends_with(char::is_whitespace));
     at.map_or(line, |i| line[..i].trim_end())
+}
+
+/// `s` trimmed, without one pair of matching surrounding quotes (`"…"` or `'…'`).
+pub(crate) fn unquote(s: &str) -> String {
+    let s = s.trim();
+    let quoted = ['"', '\''].iter().any(|&q| s.len() >= 2 && s.starts_with(q) && s.ends_with(q));
+    if quoted { &s[1..s.len() - 1] } else { s }.to_string()
 }
 
 struct Patterns {
@@ -61,28 +68,16 @@ const SHAPES: &[(&str, &str, Shape)] = &[
     ("{", "}", Shape::Decision),
 ];
 
-/// Strip quotes, expand `<br>` / `\n`, split into trimmed lines.
+/// [`unquote`], then expand `<br>` / `\n` and split into trimmed lines.
 #[must_use]
 pub fn clean_label(text: &str) -> Vec<String> {
-    let mut t = text.trim();
-    let mut cs = t.chars();
-    if let (Some(first), Some(last)) = (cs.next(), cs.next_back()) {
-        if first == last && (first == '"' || first == '\'') {
-            t = &t[1..t.len() - 1];
-        }
-    }
-    let t = PATTERNS.br.replace_all(t, "\n").replace("\\n", "\n");
+    let t = PATTERNS.br.replace_all(&unquote(text), "\n").replace("\\n", "\n");
     t.split('\n').map(|l| l.trim().to_string()).collect()
 }
 
-fn skip_ws(s: &str, mut pos: usize) -> usize {
-    while let Some(c) = s[pos..].chars().next() {
-        if !c.is_whitespace() {
-            break;
-        }
-        pos += c.len_utf8();
-    }
-    pos
+/// The first position at or after `pos` that isn't whitespace.
+fn skip_ws(s: &str, pos: usize) -> usize {
+    s.len() - s[pos..].trim_start().len()
 }
 
 /// Find a closing delimiter that is followed by end-of-line, `&` or an edge.
@@ -90,12 +85,10 @@ fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
     let mut from = start;
     while let Some(off) = s[from..].find(close) {
         let i = from + off;
-        let rest = s[i + close.len()..].trim_start();
-        match rest.chars().next() {
-            None => return Some(i),
-            Some(c) if "-=&.%".contains(c) => return Some(i),
-            _ => from = i + 1,
+        if s[i + close.len()..].trim_start().chars().next().is_none_or(|c| "-=&.%".contains(c)) {
+            return Some(i);
         }
+        from = i + 1;
     }
     None
 }
@@ -123,14 +116,7 @@ impl Parser {
             }
             i
         } else {
-            self.nodes.push(NodeDef {
-                id: id.clone(),
-                lines: vec![id.clone()],
-                shape: Shape::Box,
-                mark: Mark::None,
-                group,
-                explicit: false,
-            });
+            self.nodes.push(NodeDef { group, explicit: false, ..NodeDef::new(&id, vec![id.clone()], Shape::Box) });
             self.index.insert(id.clone(), self.nodes.len() - 1);
             self.nodes.len() - 1
         };

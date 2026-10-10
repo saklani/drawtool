@@ -6,7 +6,7 @@
 use crate::layout::{node_layers, render};
 use crate::model::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::text::{first_fit, wrap, Fit};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Label wrap widths tried in order; `None` leaves labels as written.
@@ -95,9 +95,7 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
 /// cuts by dynamic programming. `None` if a single layer is too wide on its own.
 fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     let layers = node_layers(graph);
-    let mut distinct = layers.clone();
-    distinct.sort_unstable();
-    distinct.dedup();
+    let distinct: Vec<usize> = layers.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
     let band_of = |cuts: &[usize]| -> Vec<usize> {
         layers.iter().map(|l| cuts.iter().filter(|&&c| distinct[c] <= *l).count() - 1).collect()
     };
@@ -117,13 +115,8 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     let at: Vec<usize> = layers.iter().map(|l| distinct.binary_search(l).unwrap_or(0)).collect();
     let cut_cost = |p: usize| {
         let crossing = graph.edges.iter().filter(|e| (at[e.src] < p) != (at[e.dst] < p)).count();
-        let split = (0..graph.groups.len())
-            .filter(|&g| {
-                let sides: HashSet<bool> =
-                    (0..at.len()).filter(|&v| graph.nodes[v].group == Some(g)).map(|v| at[v] < p).collect();
-                sides.len() == 2
-            })
-            .count();
+        let has = |g, before| graph.nodes.iter().zip(&at).any(|(n, &a)| n.group == Some(g) && (a < p) == before);
+        let split = (0..graph.groups.len()).filter(|&g| has(g, true) && has(g, false)).count();
         crossing + 3 * split
     };
     // Fewest bands, then least height, then the cheapest cuts. best[j] is the
@@ -142,9 +135,8 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     }
     let (mut cuts, mut j) = (vec![], n);
     while j > 0 {
-        let (_, _, _, i) = best[j]?;
-        cuts.push(i);
-        j = i;
+        j = best[j]?.3;
+        cuts.push(j);
     }
     cuts.reverse();
     if cuts.len() < 2 {
@@ -217,14 +209,8 @@ fn wrap_around(upper: &mut Grid, lower: &mut Grid, label: &str, ascii: bool) -> 
     let corner = if ascii { '.' } else { '╭' };
     let blocked = (r + 2..upper.len()).any(|row| cell(upper, row, c) != ' ')
         || (0..r2.saturating_sub(1)).any(|row| cell(lower, row, 0) != ' ');
-    if r == 0
-        || r2 == 0
-        || c < 3
-        || c2 != 2
-        || cell(upper, r - 1, c - 2) != corner
-        || cell(lower, r2 - 1, 0) != corner
-        || blocked
-    {
+    let anchored = r > 0 && r2 > 0 && c >= 3 && c2 == 2;
+    if !anchored || cell(upper, r - 1, c - 2) != corner || cell(lower, r2 - 1, 0) != corner || blocked {
         return None;
     }
     let [h, v, down_left, up_left, up_right, down_right] =

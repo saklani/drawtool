@@ -11,6 +11,25 @@ pub fn width(s: &str) -> i64 {
     s.chars().map(char_width).sum()
 }
 
+/// Cut to at most `w` columns, ending in `…` if anything was dropped.
+pub fn truncate(s: &str, w: i64) -> String {
+    if width(s) <= w {
+        return s.to_string();
+    }
+    let mut used = 0;
+    let mut out: String = s
+        .chars()
+        .take_while(|&c| {
+            used += char_width(c);
+            used < w
+        })
+        .collect();
+    if w > 0 {
+        out.push('…');
+    }
+    out
+}
+
 /// Greedy word wrap at `max` columns. Words longer than `max` are split only
 /// if `split` is set.
 pub fn wrap(s: &str, max: usize, split: bool) -> Vec<String> {

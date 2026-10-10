@@ -6,8 +6,9 @@
 //! Coordinates are abstract: `l` runs along the flow (layers) and `c` across
 //! it; `phys` maps them to x/y, so TD and LR share every line of layout.
 
-use crate::paint::{width, Painter, Pt, Weight};
+use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
 use crate::parse::{Direction, Graph, Mark, Shape, Style};
+use crate::text::width;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Gap plus dashed line between a group's members and its frame.
@@ -786,11 +787,12 @@ impl Layout {
                 Kind::Real => {
                     let (x, y) = self.phys(l0, nd.pos);
                     let (w, h) = if self.td { (nd.box_csize(), nd.lsize) } else { (nd.lsize, nd.box_csize()) };
-                    let (weight, style, round) = match (nd.mark, nd.shape) {
-                        (Mark::Highlight | Mark::Added, _) => (Weight::Heavy, Style::Solid, false),
-                        (Mark::Removed, _) => (Weight::Light, Style::Dotted, false),
-                        (_, Shape::Decision) => (Weight::Double, Style::Solid, false),
-                        (_, shape) => (Weight::Light, Style::Solid, shape == Shape::Round),
+                    let (weight, style, corners) = match (nd.mark, nd.shape) {
+                        (Mark::Highlight | Mark::Added, _) => (Weight::Heavy, Style::Solid, Corners::Square),
+                        (Mark::Removed, _) => (Weight::Light, Style::Dotted, Corners::Square),
+                        (_, Shape::Decision) => (Weight::Double, Style::Solid, Corners::Square),
+                        (_, Shape::Round) => (Weight::Light, Style::Solid, Corners::Round),
+                        _ => (Weight::Light, Style::Solid, Corners::Square),
                     };
                     if nd.shape == Shape::Database && weight == Weight::Light && style == Style::Solid {
                         // Double caps, light sides: ╒═╕ … ╘═╛.
@@ -801,10 +803,10 @@ impl Layout {
                                 .chain([([(x, y), (x, y1)], Weight::Light), ([(x1, y), (x1, y1)], Weight::Light)])
                         {
                             let net = p.net();
-                            p.line(&pts, net, weight, Style::Solid, false);
+                            p.line(&pts, net, Stroke::new(weight, Style::Solid), Layer::Main);
                         }
                     } else {
-                        p.rect((x, y), (w, h), weight, style, round, false);
+                        p.rect((x, y), (w, h), Stroke::new(weight, style), corners, Layer::Main);
                     }
                     if let Some((style, arrow)) = nd.looped {
                         // A hook on the far side: out of the box near its end,
@@ -817,7 +819,7 @@ impl Layout {
                         }
                         let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
                         let net = p.net();
-                        p.line(&pts, net, Weight::Light, style, false);
+                        p.line(&pts, net, Stroke::light(style), Layer::Main);
                         if arrow {
                             let (ax, ay) = pts[2];
                             p.symbol(ax, ay, if self.td { '◄' } else { '▲' });
@@ -870,7 +872,7 @@ impl Layout {
             for (key, pts) in pieces {
                 let id = net(&mut p, key);
                 let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
-                p.line(&pts, id, Weight::Light, s.style, false);
+                p.line(&pts, id, Stroke::light(s.style), Layer::Main);
             }
             if s.arrow_end {
                 let (x, y) = self.phys(in_l(s.v) - 1, s.ct);
@@ -894,7 +896,7 @@ impl Layout {
             let (l0, l1) = (self.bstart[lo] - FRAME, self.bstart[hi] + self.band_len(hi) - 1 + FRAME);
             let ((xa, ya), (xb, yb)) = (self.phys(l0, c0 - FRAME), self.phys(l1, c1 + FRAME));
             let (x0, x1, y0, y1) = (xa.min(xb), xa.max(xb), ya.min(yb), ya.max(yb));
-            p.rect((x0, y0), (x1 - x0 + 1, y1 - y0 + 1), Weight::Light, Style::Dotted, false, true);
+            p.rect((x0, y0), (x1 - x0 + 1, y1 - y0 + 1), Stroke::DOTTED, Corners::Square, Layer::Under);
             let title = format!(" {} ", self.titles[lane - 1]);
             let tw = width(&title);
             let free = |x: i64| (x..x + tw).all(|x| p.is_free((x, y0)));

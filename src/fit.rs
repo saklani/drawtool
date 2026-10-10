@@ -4,8 +4,8 @@
 //! connectors (①). TD only ever wraps labels.
 
 use crate::layout::{node_layers, render};
-use crate::paint::{first_fit, wrap, Fit};
 use crate::parse::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
+use crate::text::{first_fit, wrap, Fit};
 use std::collections::{HashMap, HashSet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

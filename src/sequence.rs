@@ -5,8 +5,9 @@
 //! its span, then `loop`/`alt`/`opt`/`par` frames are fitted around their
 //! contents, widening gaps until no frame border lands on a lifeline.
 
-use crate::paint::{first_fit, width, wrap, Fit, Painter, Weight};
+use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::parse::{clean_label, strip_comment, Style};
+use crate::text::{first_fit, width, wrap, Fit};
 use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
@@ -364,7 +365,7 @@ fn boxed(p: &mut Painter, (left, top): (i64, i64), w: i64, lines: &[String], rou
     if opaque {
         p.clear((left, top), (left + w - 1, top + h - 1));
     }
-    p.rect((left, top), (w, h), Weight::Light, Style::Solid, round, false);
+    p.rect((left, top), (w, h), Stroke::LIGHT, if round { Corners::Round } else { Corners::Square }, Layer::Main);
     for (i, line) in lines.iter().enumerate() {
         p.text(left + 1 + (w - 2 - width(line)).div_euclid(2), top + 1 + i as i64, line);
     }
@@ -395,13 +396,13 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
     let footer = y + 1;
     for (i, &xi) in x.iter().enumerate() {
         let net = p.net();
-        p.line(&[(xi, boxh[i] - 1), (xi, footer)], net, Weight::Light, Style::Solid, false);
+        p.line(&[(xi, boxh[i] - 1), (xi, footer)], net, Stroke::LIGHT, Layer::Main);
     }
 
     // Frames sit under everything: lifelines and messages run through them.
     let (mut stack, mut next): (Vec<(usize, i64, usize)>, usize) = (Vec::new(), 0);
     for (item, &row) in seq.items.iter().zip(&rows) {
-        let dotted = |p: &mut Painter, net, pts: &[(i64, i64)]| p.line(pts, net, Weight::Light, Style::Dotted, true);
+        let dotted = |p: &mut Painter, net, pts: &[(i64, i64)]| p.line(pts, net, Stroke::DOTTED, Layer::Under);
         match item {
             Item::Start { .. } => {
                 stack.push((next, row, p.net()));
@@ -442,7 +443,7 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
                 };
                 pts.push(if head == Head::Open { (if m.from == m.to { a } else { b }, tip.1) } else { tip });
                 let net = p.net();
-                p.line(&pts, net, Weight::Light, style, false);
+                p.line(&pts, net, Stroke::light(style), Layer::Main);
                 match head {
                     Head::Arrow => p.symbol(tip.0, tip.1, if right && m.from != m.to { '►' } else { '◄' }),
                     Head::Cross => p.symbol(tip.0, tip.1, 'x'),

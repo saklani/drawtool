@@ -3,8 +3,8 @@
 //! corner, tee and junction from which directions meet in a cell.
 
 use crate::parse::Style;
+use crate::text::char_width;
 use std::collections::{HashMap, HashSet};
-use unicode_width::UnicodeWidthChar;
 
 const U: u8 = 1;
 const D: u8 = 2;
@@ -34,53 +34,42 @@ struct Arm {
     style: Style,
 }
 
-#[must_use]
-pub fn char_width(c: char) -> i64 {
-    c.width().unwrap_or(1).max(1) as i64
+/// How a line is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Stroke {
+    pub weight: Weight,
+    pub style: Style,
 }
 
-pub fn width(s: &str) -> i64 {
-    s.chars().map(char_width).sum()
-}
+impl Stroke {
+    pub const LIGHT: Stroke = Stroke::new(Weight::Light, Style::Solid);
+    pub const HEAVY: Stroke = Stroke::new(Weight::Heavy, Style::Solid);
+    pub const DOTTED: Stroke = Stroke::new(Weight::Light, Style::Dotted);
 
-/// Greedy word wrap at `max` columns. Words longer than `max` are split only
-/// if `split` is set.
-pub fn wrap(s: &str, max: usize, split: bool) -> Vec<String> {
-    let opts = textwrap::Options::new(max.max(1))
-        .break_words(split)
-        .word_separator(textwrap::WordSeparator::AsciiSpace)
-        .word_splitter(textwrap::WordSplitter::NoHyphenation);
-    let out: Vec<String> = textwrap::wrap(&s.split_whitespace().collect::<Vec<_>>().join(" "), opts)
-        .into_iter()
-        .map(String::from)
-        .collect();
-    if out.is_empty() {
-        vec![String::new()]
-    } else {
-        out
+    #[must_use]
+    pub const fn new(weight: Weight, style: Style) -> Self {
+        Stroke { weight, style }
+    }
+
+    /// A light line in `style` (an edge).
+    #[must_use]
+    pub const fn light(style: Style) -> Self {
+        Stroke::new(Weight::Light, style)
     }
 }
 
-/// A rendering and whether it met the column budget.
-pub struct Fit {
-    pub text: String,
-    pub width: usize,
-    pub fits: bool,
+/// Main lines, or the under layer, which only shows in otherwise empty cells
+/// (group and block frames).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Layer {
+    Main,
+    Under,
 }
 
-/// The first rendering no wider than `max` (0 = unlimited), else the narrowest.
-pub fn first_fit(max: usize, attempts: impl IntoIterator<Item = String>) -> Fit {
-    let mut best: Option<Fit> = None;
-    for text in attempts {
-        let width = text.lines().map(width).max().unwrap_or(0) as usize;
-        if max == 0 || width <= max {
-            return Fit { text, width, fits: true };
-        }
-        if best.as_ref().is_none_or(|b| width < b.width) {
-            best = Some(Fit { text, width, fits: false });
-        }
-    }
-    best.expect("at least one attempt")
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Corners {
+    Square,
+    Round,
 }
 
 #[derive(Default)]
@@ -124,7 +113,8 @@ impl Painter {
     }
 
     /// An axis-aligned polyline through `pts`.
-    pub fn line(&mut self, pts: &[Pt], net: usize, weight: Weight, style: Style, under: bool) {
+    pub fn line(&mut self, pts: &[Pt], net: usize, stroke: Stroke, layer: Layer) {
+        let Stroke { weight, style } = stroke;
         for w in pts.windows(2) {
             let ((x0, y0), (x1, y1)) = (w[0], w[1]);
             let (lo, hi) = if x0 == x1 { (y0.min(y1), y0.max(y1)) } else { (x0.min(x1), x0.max(x1)) };
@@ -132,7 +122,7 @@ impl Painter {
                 let (back, fwd) = if x0 == x1 { (U, D) } else { (L, R) };
                 let bits = if t > lo { back } else { 0 } | if t < hi { fwd } else { 0 };
                 let cell = if x0 == x1 { (x0, t) } else { (t, y0) };
-                let arms = self.lines[usize::from(under)].entry(cell).or_default();
+                let arms = self.lines[usize::from(layer == Layer::Under)].entry(cell).or_default();
                 match arms.iter_mut().find(|a| a.net == net) {
                     Some(a) => {
                         a.bits |= bits;
@@ -148,11 +138,11 @@ impl Painter {
     }
 
     /// A rectangle `w`×`h` with its top-left at (`x`, `y`).
-    pub fn rect(&mut self, (x, y): Pt, (w, h): Pt, weight: Weight, style: Style, round: bool, under: bool) {
+    pub fn rect(&mut self, (x, y): Pt, (w, h): Pt, stroke: Stroke, corners: Corners, layer: Layer) {
         let (x1, y1) = (x + w - 1, y + h - 1);
         let net = self.net();
-        self.line(&[(x, y), (x1, y), (x1, y1), (x, y1), (x, y)], net, weight, style, under);
-        if round {
+        self.line(&[(x, y), (x1, y), (x1, y1), (x, y1), (x, y)], net, stroke, layer);
+        if corners == Corners::Round {
             self.round.extend([(x, y), (x1, y), (x, y1), (x1, y1)]);
         }
     }
@@ -289,5 +279,109 @@ impl Painter {
         let lines: Vec<String> =
             rows.iter().map(|r| r.iter().filter(|&&c| c != WIDE).collect::<String>().trim_end().to_string()).collect();
         lines.join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn painted(ascii: bool, draw: impl FnOnce(&mut Painter)) -> String {
+        let mut p = Painter::new(ascii);
+        draw(&mut p);
+        p.finish()
+    }
+
+    #[test]
+    fn an_edge_leaving_a_box_border_makes_a_tee() {
+        let out = painted(false, |p| {
+            p.rect((0, 0), (5, 3), Stroke::LIGHT, Corners::Square, Layer::Main);
+            let net = p.net();
+            p.line(&[(2, 2), (2, 4)], net, Stroke::LIGHT, Layer::Main);
+        });
+        assert_eq!(out, "┌───┐\n│   │\n└─┬─┘\n  │\n  │");
+    }
+
+    #[test]
+    fn rounded_heavy_and_double_corners() {
+        let corners = |stroke, corners| painted(false, |p| p.rect((0, 0), (3, 3), stroke, corners, Layer::Main));
+        assert!(corners(Stroke::LIGHT, Corners::Round).starts_with('╭'));
+        assert!(corners(Stroke::HEAVY, Corners::Square).starts_with('┏'));
+        assert!(corners(Stroke::new(Weight::Double, Style::Solid), Corners::Square).starts_with('╔'));
+    }
+
+    #[test]
+    fn a_light_edge_on_a_double_border_is_a_mixed_tee() {
+        let out = painted(false, |p| {
+            p.rect((0, 0), (5, 3), Stroke::new(Weight::Double, Style::Solid), Corners::Square, Layer::Main);
+            let net = p.net();
+            p.line(&[(2, 2), (2, 3)], net, Stroke::LIGHT, Layer::Main);
+        });
+        assert_eq!(out.lines().nth(2), Some("╚═╤═╝"));
+    }
+
+    #[test]
+    fn crossing_vs_join() {
+        let cross = |mark_crossings, same_net| {
+            painted(false, |p| {
+                p.mark_crossings = mark_crossings;
+                let (a, b) = (p.net(), p.net());
+                p.line(&[(0, 1), (2, 1)], a, Stroke::LIGHT, Layer::Main);
+                p.line(&[(1, 0), (1, 2)], if same_net { a } else { b }, Stroke::LIGHT, Layer::Main);
+            })
+        };
+        assert_eq!(cross(false, true).lines().nth(1), Some("─┼─"), "one net: a join");
+        assert_eq!(cross(true, false).lines().nth(1), Some("─╂─"), "two nets: a marked crossing");
+        assert_eq!(cross(false, false).lines().nth(1), Some("─│─"), "unmarked: the vertical runs through");
+    }
+
+    #[test]
+    fn a_trunk_shared_by_two_styles_is_drawn_solid() {
+        let out = painted(false, |p| {
+            let net = p.net();
+            p.line(&[(0, 0), (3, 0)], net, Stroke::DOTTED, Layer::Main);
+            p.line(&[(0, 0), (3, 0)], net, Stroke::light(Style::Thick), Layer::Main);
+        });
+        assert_eq!(out, "────");
+    }
+
+    #[test]
+    fn the_under_layer_only_shows_in_empty_cells() {
+        let out = painted(false, |p| {
+            p.rect((0, 0), (5, 3), Stroke::DOTTED, Corners::Square, Layer::Under);
+            let net = p.net();
+            p.line(&[(0, 1), (4, 1)], net, Stroke::LIGHT, Layer::Main);
+        });
+        assert_eq!(out, "┌┄┄┄┐\n─────\n└┄┄┄┘");
+    }
+
+    #[test]
+    fn clear_erases_lines_but_text_stays() {
+        let out = painted(false, |p| {
+            let net = p.net();
+            p.line(&[(0, 0), (4, 0)], net, Stroke::LIGHT, Layer::Main);
+            p.clear((1, 0), (3, 0));
+            p.text(2, 0, "x");
+        });
+        assert_eq!(out, "─ x ─");
+    }
+
+    #[test]
+    fn ascii_translates_symbols_but_never_text() {
+        let out = painted(true, |p| {
+            p.rect((0, 0), (5, 3), Stroke::LIGHT, Corners::Round, Layer::Main);
+            p.symbol(0, 3, '►');
+            p.text(1, 3, "►");
+        });
+        assert_eq!(out, ".---.\n|   |\n'---'\n>►");
+    }
+
+    #[test]
+    fn wide_text_takes_two_cells_and_negative_coordinates_shift_to_zero() {
+        let out = painted(false, |p| {
+            p.text(-3, -1, "数据");
+            p.symbol(1, -1, '!');
+        });
+        assert_eq!(out, "数据!");
     }
 }

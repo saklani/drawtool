@@ -16,6 +16,7 @@ use std::fmt;
 mod fit;
 mod layout;
 mod marks;
+mod model;
 mod paint;
 mod parse;
 mod sequence;
@@ -25,7 +26,8 @@ mod wireframe;
 pub use fit::{render_fit, wrap_labels};
 pub use layout::render;
 pub use marks::{diff, highlight};
-pub use parse::{parse, Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
+pub use model::{Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
+pub use parse::parse;
 pub use sequence::{is_sequence, parse_sequence, render_sequence, render_sequence_fit};
 pub use sequence::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 pub use text::Fit;
@@ -81,24 +83,31 @@ pub fn render_source(text: &str, opts: &Options) -> Result<Fit, Error> {
 #[non_exhaustive]
 pub struct Error {
     pub line: Option<usize>,
+    /// 1-based character column on that line, when known.
+    pub column: Option<usize>,
     pub message: String,
 }
 
 impl Error {
     pub(crate) fn new(message: impl Into<String>) -> Self {
-        Error { line: None, message: message.into() }
+        Error { line: None, column: None, message: message.into() }
     }
 
     pub(crate) fn at(line: usize, message: impl Into<String>) -> Self {
-        Error { line: Some(line), message: message.into() }
+        Error { line: Some(line), ..Error::new(message) }
+    }
+
+    pub(crate) fn at_column(line: usize, column: usize, message: impl Into<String>) -> Self {
+        Error { column: Some(column), ..Error::at(line, message) }
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.line {
-            Some(line) => write!(f, "line {line}: {}", self.message),
-            None => f.write_str(&self.message),
+        match (self.line, self.column) {
+            (Some(line), Some(column)) => write!(f, "line {line}, column {column}: {}", self.message),
+            (Some(line), None) => write!(f, "line {line}: {}", self.message),
+            _ => f.write_str(&self.message),
         }
     }
 }

@@ -1,103 +1,16 @@
 //! Parser for the Mermaid-style flowchart subset.
 
+use crate::model::{Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
 use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
-use std::sync::OnceLock;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Direction {
-    TD,
-    LR,
-}
-
-impl std::str::FromStr for Direction {
-    type Err = String;
-
-    /// `TD`/`TB` or `LR`, in any case.
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s.to_uppercase().as_str() {
-            "TD" | "TB" => Ok(Direction::TD),
-            "LR" => Ok(Direction::LR),
-            _ => Err(format!("unknown direction {s:?} (use TD or LR)")),
-        }
-    }
-}
+use std::sync::LazyLock;
 
 /// `line` without a trailing `%% comment`. A line that starts with `%%` is
 /// left alone: it is a whole-line comment or a `%% highlight:` directive.
 pub(crate) fn strip_comment(line: &str) -> &str {
     let at = line.match_indices("%%").map(|(i, _)| i).find(|&i| i > 0 && line[..i].ends_with(char::is_whitespace));
     at.map_or(line, |i| line[..i].trim_end())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Shape {
-    Box,
-    /// `[(name)]`: drawn with double caps, `╒═╕`.
-    Database,
-    Round,
-    Decision,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Style {
-    Solid,
-    Dotted,
-    Thick,
-}
-
-/// How a node is emphasised: by `--highlight`, or by `--diff`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Mark {
-    #[default]
-    None,
-    Highlight,
-    Added,
-    Removed,
-    Changed,
-}
-
-#[derive(Clone, Debug)]
-pub struct NodeDef {
-    pub id: String,
-    pub lines: Vec<String>,
-    pub shape: Shape,
-    pub mark: Mark,
-    /// Index into `Graph::groups` of the innermost `subgraph` the node
-    /// first appeared in.
-    pub group: Option<usize>,
-    explicit: bool,
-}
-
-impl NodeDef {
-    #[must_use]
-    pub fn new(id: &str, lines: Vec<String>, shape: Shape) -> Self {
-        NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, group: None, explicit: true }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct EdgeDef {
-    pub src: usize,
-    pub dst: usize,
-    pub label: Option<Vec<String>>,
-    pub style: Style,
-    pub arrow: bool,
-}
-
-/// A `subgraph` block, drawn as a dashed frame around its nodes.
-#[derive(Clone, Debug)]
-pub struct Group {
-    pub title: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct Graph {
-    pub direction: Direction,
-    pub nodes: Vec<NodeDef>,
-    pub edges: Vec<EdgeDef>,
-    pub groups: Vec<Group>,
 }
 
 struct Patterns {
@@ -111,34 +24,32 @@ struct Patterns {
     br: Regex,
 }
 
-fn patterns() -> &'static Patterns {
-    static P: OnceLock<Patterns> = OnceLock::new();
-    P.get_or_init(|| {
-        let rx = |s: &str| Regex::new(s).unwrap();
-        Patterns {
-            id: rx(r"^\w[\w.:$]*"),
-            connectors: vec![
-                (rx(r"^--\s+(.+?)\s+-->"), Style::Solid, true),
-                (rx(r"^--\s+(.+?)\s+---"), Style::Solid, false),
-                (rx(r"^-\.\s+(.+?)\s+\.->"), Style::Dotted, true),
-                (rx(r"^==\s+(.+?)\s+==>"), Style::Thick, true),
-                (rx(r"^-\.+->"), Style::Dotted, true),
-                (rx(r"^-+>"), Style::Solid, true),
-                (rx(r"^=+>"), Style::Thick, true),
-                (rx(r"^-\.+-"), Style::Dotted, false),
-                (rx(r"^-{3,}"), Style::Solid, false),
-                (rx(r"^={3,}"), Style::Thick, false),
-            ],
-            pipe_label: rx(r"^\s*\|([^|]*)\|"),
-            header: rx(r"(?i)^(?:(?:flowchart|graph)\s+|direction\s+)?(TD|TB|BT|LR|RL)$"),
-            bare_header: rx(r"(?i)^(?:flowchart|graph)$"),
-            ignored: rx(r"^(?:classDef|class|style|linkStyle|click)\b"),
-            subgraph: rx(r#"^subgraph\s+(?:(\w[\w.:$-]*)\s*\[(.*)\]|(.+))$"#),
-            br: rx(r"(?i)<br\s*/?>"),
-        }
-    })
-}
+static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
+    let rx = |s: &str| Regex::new(s).unwrap();
+    Patterns {
+        id: rx(r"^\w[\w.:$]*"),
+        connectors: vec![
+            (rx(r"^--\s+(.+?)\s+-->"), Style::Solid, true),
+            (rx(r"^--\s+(.+?)\s+---"), Style::Solid, false),
+            (rx(r"^-\.\s+(.+?)\s+\.->"), Style::Dotted, true),
+            (rx(r"^==\s+(.+?)\s+==>"), Style::Thick, true),
+            (rx(r"^-\.+->"), Style::Dotted, true),
+            (rx(r"^-+>"), Style::Solid, true),
+            (rx(r"^=+>"), Style::Thick, true),
+            (rx(r"^-\.+-"), Style::Dotted, false),
+            (rx(r"^-{3,}"), Style::Solid, false),
+            (rx(r"^={3,}"), Style::Thick, false),
+        ],
+        pipe_label: rx(r"^\s*\|([^|]*)\|"),
+        header: rx(r"(?i)^(?:(?:flowchart|graph)\s+|direction\s+)?(TD|TB|BT|LR|RL)$"),
+        bare_header: rx(r"(?i)^(?:flowchart|graph)$"),
+        ignored: rx(r"^(?:classDef|class|style|linkStyle|click)\b"),
+        subgraph: rx(r#"^subgraph\s+(?:(\w[\w.:$-]*)\s*\[(.*)\]|(.+))$"#),
+        br: rx(r"(?i)<br\s*/?>"),
+    }
+});
 
+/// Shape brackets, two-character openers first so `[(` wins over `[`.
 const SHAPES: &[(&str, &str, Shape)] = &[
     ("([", "])", Shape::Round),
     ("[(", ")]", Shape::Database),
@@ -150,10 +61,6 @@ const SHAPES: &[(&str, &str, Shape)] = &[
     ("{", "}", Shape::Decision),
 ];
 
-fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
-}
-
 /// Strip quotes, expand `<br>` / `\n`, split into trimmed lines.
 #[must_use]
 pub fn clean_label(text: &str) -> Vec<String> {
@@ -164,7 +71,7 @@ pub fn clean_label(text: &str) -> Vec<String> {
             t = &t[1..t.len() - 1];
         }
     }
-    let t = patterns().br.replace_all(t, "\n").replace("\\n", "\n");
+    let t = PATTERNS.br.replace_all(t, "\n").replace("\\n", "\n");
     t.split('\n').map(|l| l.trim().to_string()).collect()
 }
 
@@ -193,6 +100,9 @@ fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
     None
 }
 
+/// A failed statement: the byte offset where it went wrong, and why.
+type Fail = (usize, String);
+
 struct Parser {
     nodes: Vec<NodeDef>,
     index: HashMap<String, usize>,
@@ -202,8 +112,8 @@ struct Parser {
 }
 
 impl Parser {
-    fn node(&mut self, s: &str, pos: usize) -> Result<(usize, usize), String> {
-        let m = patterns().id.find(&s[pos..]).ok_or_else(|| format!("expected a node id at {}", quote(&s[pos..])))?;
+    fn node(&mut self, s: &str, pos: usize) -> Result<(usize, usize), Fail> {
+        let m = PATTERNS.id.find(&s[pos..]).ok_or_else(|| (pos, format!("expected a node id at {:?}", &s[pos..])))?;
         let id = m.as_str().to_string();
         let pos = pos + m.end();
         let group = self.open.last().map(|o| o.0);
@@ -227,7 +137,7 @@ impl Parser {
         for &(opener, closer, shape) in SHAPES {
             if s[pos..].starts_with(opener) {
                 let end = find_close(s, pos + opener.len(), closer)
-                    .ok_or_else(|| format!("unclosed {} for node {}", quote(opener), quote(&id)))?;
+                    .ok_or_else(|| (pos, format!("unclosed {opener:?} for node {id:?}")))?;
                 let node = &mut self.nodes[idx];
                 if !node.explicit {
                     node.lines = clean_label(&s[pos + opener.len()..end]);
@@ -240,7 +150,7 @@ impl Parser {
         Ok((idx, pos))
     }
 
-    fn group(&mut self, s: &str, mut pos: usize) -> Result<(Vec<usize>, usize), String> {
+    fn group(&mut self, s: &str, mut pos: usize) -> Result<(Vec<usize>, usize), Fail> {
         let mut ids = Vec::new();
         loop {
             let (id, p) = self.node(s, skip_ws(s, pos))?;
@@ -255,21 +165,21 @@ impl Parser {
         }
     }
 
-    fn statement(&mut self, s: &str) -> Result<(), String> {
+    fn statement(&mut self, s: &str) -> Result<(), Fail> {
         let (mut group, mut pos) = self.group(s, 0)?;
         loop {
             pos = skip_ws(s, pos);
             if pos >= s.len() || s[pos..].starts_with("%%") {
                 return Ok(());
             }
-            let (caps, style, arrow) = patterns()
+            let (caps, style, arrow) = PATTERNS
                 .connectors
                 .iter()
                 .find_map(|(rx, st, ar)| rx.captures(&s[pos..]).map(|c| (c, *st, *ar)))
-                .ok_or_else(|| format!("expected an arrow like --> at {}", quote(&s[pos..])))?;
+                .ok_or_else(|| (pos, format!("expected an arrow like --> at {:?}", &s[pos..])))?;
             let mut label = caps.get(1).map(|m| m.as_str().to_string());
             pos += caps.get(0).unwrap().end();
-            if let Some(pm) = patterns().pipe_label.captures(&s[pos..]) {
+            if let Some(pm) = PATTERNS.pipe_label.captures(&s[pos..]) {
                 label = Some(pm[1].to_string());
                 pos += pm.get(0).unwrap().end();
             }
@@ -293,7 +203,7 @@ impl Parser {
 /// A line that isn't valid flowchart syntax, an unbalanced `subgraph`/`end`,
 /// or a `%% highlight:` path that doesn't exist.
 pub fn parse(text: &str) -> Result<Graph, Error> {
-    let pats = patterns();
+    let pats = &*PATTERNS;
     let mut direction = Direction::LR;
     let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new(), open: Vec::new() };
     let mut groups: Vec<Group> = Vec::new();
@@ -330,7 +240,11 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
         if pats.bare_header.is_match(line) || pats.ignored.is_match(line) {
             continue;
         }
-        p.statement(line).map_err(|e| Error::at(lineno + 1, e))?;
+        p.statement(line).map_err(|(at, message)| {
+            // 1-based column in the original line, counting characters.
+            let indent = raw.len() - raw.trim_start().len();
+            Error::at_column(lineno + 1, raw[..indent].chars().count() + line[..at].chars().count() + 1, message)
+        })?;
     }
     if let Some(&(g, line)) = p.open.first() {
         return Err(Error::at(line, format!("`subgraph {}` is never closed with `end`", groups[g].title)));

@@ -2,7 +2,7 @@
 //! versions of a diagram. Both only change node marks, labels and edge styles,
 //! so layout stays unaware of them.
 
-use crate::parse::{EdgeDef, Graph, Mark, Style};
+use crate::model::{EdgeDef, Graph, Mark, Style};
 use crate::Error;
 use std::collections::{HashMap, HashSet};
 

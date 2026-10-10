@@ -5,13 +5,14 @@
 //! its span, then `loop`/`alt`/`opt`/`par` frames are fitted around their
 //! contents, widening gaps until no frame border lands on a lifeline.
 
+use crate::model::Style;
 use crate::paint::{Corners, Layer, Painter, Stroke};
-use crate::parse::{clean_label, strip_comment, Style};
+use crate::parse::{clean_label, strip_comment};
 use crate::text::{first_fit, width, wrap, Fit};
 use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 #[derive(Clone, Debug)]
 pub struct Participant {
@@ -84,20 +85,17 @@ struct Patterns {
     ignored: Regex,
 }
 
-fn patterns() -> &'static Patterns {
-    static P: OnceLock<Patterns> = OnceLock::new();
-    P.get_or_init(|| {
-        let rx = |s: &str| Regex::new(s).unwrap();
-        Patterns {
-            participant: rx(r"(?i)^(participant|actor)\s+([^\s]+?)(?:\s+as\s+(.+))?$"),
-            message: rx(r"^([^\s:+\-][^\s:]*?)\s*(-->>|->>|--x|-x|--\)|-\)|-->|->)\s*[+\-]?\s*([^\s:]+)\s*(?::(.*))?$"),
-            note: rx(r"(?i)^note\s+(left of|right of|over)\s+([^\s,:]+)(?:\s*,\s*([^\s,:]+))?\s*:(.*)$"),
-            start: rx(r"^(loop|alt|opt|par|critical|break|rect|box)(?:\s+(.*))?$"),
-            divider: rx(r"^(else|and|option)(?:\s+(.*))?$"),
-            ignored: rx(r"(?i)^(sequenceDiagram$|autonumber\b|activate\b|deactivate\b|title\b|acc(Title|Descr)\b)"),
-        }
-    })
-}
+static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
+    let rx = |s: &str| Regex::new(s).unwrap();
+    Patterns {
+        participant: rx(r"(?i)^(participant|actor)\s+([^\s]+?)(?:\s+as\s+(.+))?$"),
+        message: rx(r"^([^\s:+\-][^\s:]*?)\s*(-->>|->>|--x|-x|--\)|-\)|-->|->)\s*[+\-]?\s*([^\s:]+)\s*(?::(.*))?$"),
+        note: rx(r"(?i)^note\s+(left of|right of|over)\s+([^\s,:]+)(?:\s*,\s*([^\s,:]+))?\s*:(.*)$"),
+        start: rx(r"^(loop|alt|opt|par|critical|break|rect|box)(?:\s+(.*))?$"),
+        divider: rx(r"^(else|and|option)(?:\s+(.*))?$"),
+        ignored: rx(r"(?i)^(sequenceDiagram$|autonumber\b|activate\b|deactivate\b|title\b|acc(Title|Descr)\b)"),
+    }
+});
 
 /// True if the first meaningful line of `text` is `sequenceDiagram`.
 pub fn is_sequence(text: &str) -> bool {
@@ -123,7 +121,7 @@ fn label(text: Option<&str>) -> Vec<String> {
 /// A line that isn't a participant, message, note or block keyword, or an
 /// unbalanced block.
 pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
-    let p = patterns();
+    let p = &*PATTERNS;
     let (mut parts, mut index): (Vec<Participant>, HashMap<String, usize>) = Default::default();
     let mut get = |id: &str, parts: &mut Vec<Participant>| {
         *index.entry(id.to_string()).or_insert_with(|| {

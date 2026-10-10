@@ -6,8 +6,8 @@
 //! Coordinates are abstract: `l` runs along the flow (layers) and `c` across
 //! it; `phys` maps them to x/y, so TD and LR share every line of layout.
 
+use crate::model::{Direction, Graph, Mark, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
-use crate::parse::{Direction, Graph, Mark, Shape, Style};
 use crate::text::width;
 use std::collections::{HashMap, HashSet, VecDeque};
 

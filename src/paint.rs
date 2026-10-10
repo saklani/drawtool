@@ -2,7 +2,7 @@
 //! symbols and lines (box borders are lines too); the painter derives every
 //! corner, tee and junction from which directions meet in a cell.
 
-use crate::parse::Style;
+use crate::model::Style;
 use crate::text::char_width;
 use std::collections::{HashMap, HashSet};
 

@@ -35,8 +35,9 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 
 Define a node's label once (`p(parse_body)`), then refer to it by id (`p`). Cycles and self-loops work.
 Flags: `--ascii` for plain ASCII, `-d TD` to override direction, `-w N` column budget
-(default 120). A too-wide LR diagram gets its labels wrapped, then is broken into stacked bands
-joined by numbered connectors (①). drawtool never switches to TD by itself; if it still can't
+(default 120 when run by Claude). A too-wide LR diagram gets its labels wrapped, then continues on
+the next row: a single crossing edge is drawn wrapping around, several are joined by numbered
+connectors (①). drawtool never switches to TD by itself; if it still can't
 fit, it prints a `note:` on stderr. Never paste that note into the reply.
 If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --path /Users/shauryasaklani/Development/drawtool`.

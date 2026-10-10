@@ -37,12 +37,11 @@ fn wide_lr_wraps_labels_before_giving_up_on_lr() {
 }
 
 #[test]
-fn long_lr_chain_breaks_into_bands_before_td() {
+fn long_lr_chain_breaks_into_rows_and_stays_lr() {
     let src = "flowchart LR\na --> b --> c --> d --> e --> f --> g --> h";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 30);
     assert_eq!(fitted.direction, drawtool::Direction::LR);
     assert!(fitted.bands > 1 && fitted.width <= 30, "\n{}", fitted.text);
-    assert!(fitted.text.contains('①'), "bands are joined by connectors:\n{}", fitted.text);
 }
 
 #[test]
@@ -72,4 +71,20 @@ fn max_width_zero_means_unlimited() {
 fn wrapping_keeps_long_words_whole() {
     let g = drawtool::wrap_labels(&parse("a[supercalifragilistic word]").unwrap(), 8);
     assert_eq!(g.nodes[0].lines, vec!["supercalifragilistic", "word"]);
+}
+
+#[test]
+fn single_crossing_edge_wraps_around_like_text() {
+    let src = "flowchart LR\na[first step] --> b[second step] --> c[third step] --> d[fourth step]";
+    let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 50);
+    assert!(fitted.bands > 1 && fitted.width <= 50, "\n{}", fitted.text);
+    assert!(!fitted.text.contains('①'), "a lone crossing edge is drawn, not numbered:\n{}", fitted.text);
+    assert!(fitted.text.contains("└─►"), "\n{}", fitted.text);
+}
+
+#[test]
+fn several_crossing_edges_keep_connectors() {
+    let src = "flowchart LR\na --> b --> c --> d --> e\nb --> e";
+    let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 20);
+    assert!(fitted.text.contains('①'), "\n{}", fitted.text);
 }

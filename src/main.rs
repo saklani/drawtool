@@ -13,7 +13,8 @@ Arguments:
 Options:
   -a, --ascii            plain ASCII output
   -d, --direction <DIR>  override layout direction: TD or LR
-  -w, --max-width <N>    column budget (default: $COLUMNS, else 120; 0 = unlimited).
+  -w, --max-width <N>    column budget (default: $COLUMNS, else the terminal's
+                         width, else 120; 0 = unlimited).
                          Too-wide diagrams get their labels wrapped; LR ones are
                          then broken into bands joined by numbered connectors.
                          The direction never changes on its own.
@@ -40,11 +41,25 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// `$COLUMNS`, else the width of whichever of stdout/stderr is a terminal
+/// (so `drawtool | less` still fits the window), else 120.
+fn default_width() -> usize {
+    if let Some(n) = std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()) {
+        return n;
+    }
+    let tty = terminal_size::terminal_size_of(std::io::stdout())
+        .or_else(|| terminal_size::terminal_size_of(std::io::stderr()));
+    match tty {
+        Some((terminal_size::Width(w), _)) => w as usize,
+        None => 120,
+    }
+}
+
 fn main() -> ExitCode {
     let mut ascii = false;
     let mut direction = None;
     let mut file: Option<String> = None;
-    let mut max_width: usize = std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).unwrap_or(120);
+    let mut max_width = default_width();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {

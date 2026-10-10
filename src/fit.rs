@@ -111,16 +111,22 @@ fn connector_label(n: usize, ascii: bool) -> String {
     }
 }
 
-/// The sub-graph for band `b`: its own nodes and edges, plus a numbered
-/// connector wherever an edge leaves or enters the band. Edges into the same
-/// node share one connector number.
-fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph {
-    let mut number: HashMap<usize, usize> = HashMap::new();
+/// Connector number for every node that an edge from another band enters.
+fn connector_numbers(graph: &Graph, band_of: &[usize]) -> HashMap<usize, usize> {
+    let mut number = HashMap::new();
     for e in &graph.edges {
         if band_of[e.src] != band_of[e.dst] && !number.contains_key(&e.dst) {
             number.insert(e.dst, number.len() + 1);
         }
     }
+    number
+}
+
+/// The sub-graph for band `b`: its own nodes and edges, plus a numbered
+/// connector wherever an edge leaves or enters the band. Edges into the same
+/// node share one connector number.
+fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph {
+    let number = connector_numbers(graph, band_of);
     let mut nodes = Vec::new();
     let mut index: HashMap<usize, usize> = HashMap::new();
     let mut connectors: HashMap<usize, usize> = HashMap::new();
@@ -194,8 +200,148 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
         parts.push(fits(&cuts, b)?);
     }
     let width = parts.iter().map(|p| p.width).max().unwrap_or(0);
-    let text = parts.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n\n");
-    Some(Fitted { text, direction: Direction::LR, width, fits: true, bands: parts.len() })
+    let bands = parts.len();
+    let text = join_bands(graph, &band_of(&cuts), parts, ascii);
+    Some(Fitted { text, direction: Direction::LR, width, fits: true, bands })
+}
+
+/// Stack rendered bands. Where exactly one edge crosses a break, draw it as a
+/// line that wraps around to the next band; otherwise keep the numbered
+/// connectors and separate the bands with a blank line.
+fn join_bands(graph: &Graph, band_of: &[usize], parts: Vec<Fitted>, ascii: bool) -> String {
+    let numbers = connector_numbers(graph, band_of);
+    let nb = parts.len();
+    let (mut outs, mut ins) = (vec![Vec::new(); nb], vec![Vec::new(); nb]);
+    for e in &graph.edges {
+        let (from, to) = (band_of[e.src], band_of[e.dst]);
+        if from != to {
+            let k = numbers[&e.dst];
+            if !outs[from].contains(&k) {
+                outs[from].push(k);
+            }
+            if !ins[to].contains(&k) {
+                ins[to].push(k);
+            }
+        }
+    }
+    let mut grids: Vec<Vec<Vec<char>>> = parts.iter().map(|p| to_grid(&p.text)).collect();
+    let mut out: Vec<Vec<char>> = Vec::new();
+    for b in 0..nb {
+        if b > 0 {
+            let k = outs[b - 1].first().copied();
+            let single = outs[b - 1].len() == 1
+                && ins[b] == outs[b - 1]
+                && (0..nb).all(|o| o == b - 1 || !outs[o].contains(&k.unwrap()))
+                && (0..nb).all(|o| o == b || !ins[o].contains(&k.unwrap()));
+            let label = connector_label(k.unwrap_or(0).max(1), ascii);
+            let joint = if single { wrap_around(&mut out, &mut grids[b], &label, ascii) } else { None };
+            out.push(joint.unwrap_or_default());
+        }
+        out.append(&mut grids[b]);
+    }
+    from_grid(&out)
+}
+
+/// Rows of display cells; WIDE marks the right half of a double-width char.
+const WIDE: char = '\0';
+
+fn to_grid(text: &str) -> Vec<Vec<char>> {
+    text.lines()
+        .map(|l| {
+            let mut row = Vec::new();
+            for ch in l.chars() {
+                row.push(ch);
+                if unicode_width::UnicodeWidthChar::width(ch) == Some(2) {
+                    row.push(WIDE);
+                }
+            }
+            row
+        })
+        .collect()
+}
+
+fn from_grid(grid: &[Vec<char>]) -> String {
+    grid.iter()
+        .map(|r| r.iter().filter(|&&c| c != WIDE).collect::<String>().trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn find_label(grid: &[Vec<char>], label: &[char]) -> Option<(usize, usize)> {
+    grid.iter().enumerate().find_map(|(r, row)| {
+        row.windows(label.len()).position(|w| w == label).map(|c| (r, c))
+    })
+}
+
+fn cell(grid: &[Vec<char>], r: usize, c: usize) -> char {
+    grid.get(r).and_then(|row| row.get(c)).copied().unwrap_or(' ')
+}
+
+fn set(grid: &mut [Vec<char>], r: usize, c: usize, ch: char) {
+    let row = &mut grid[r];
+    if row.len() <= c {
+        row.resize(c + 1, ' ');
+    }
+    row[c] = ch;
+}
+
+/// Replace the out-connector at the end of `upper` and the in-connector at
+/// the start of `lower` with one line that turns down, runs back left along a
+/// new row, and enters `lower`. Returns that new row, or `None` (leaving both
+/// grids untouched) if anything is in the way.
+fn wrap_around(upper: &mut [Vec<char>], lower: &mut [Vec<char>], label: &str, ascii: bool) -> Option<Vec<char>> {
+    let label: Vec<char> = label.chars().collect();
+    let lw = label.len();
+    let (r, c) = find_label(upper, &label)?;
+    let (r2, c2) = find_label(lower, &label)?;
+    let corner = if ascii { '.' } else { '╭' };
+    if r == 0 || r2 == 0 || c < 3 || c2 != 2 || cell(upper, r - 1, c - 2) != corner || cell(lower, r2 - 1, 0) != corner {
+        return None;
+    }
+    let t = c; // column where the line turns down
+    if (r + 2..upper.len()).any(|row| cell(upper, row, t) != ' ') || (0..r2 - 1).any(|row| cell(lower, row, 0) != ' ') {
+        return None;
+    }
+    let [h, v, down_left, up_left, up_right, down_right] =
+        if ascii { ['-', '|', '+', '+', '+', '+'] } else { ['─', '│', '┐', '┘', '└', '┌'] };
+    for row in r - 1..=r + 1 {
+        for col in c - 2..=c + lw + 1 {
+            set(upper, row, col, ' ');
+        }
+    }
+    for col in c - 3..t {
+        set(upper, r, col, h);
+    }
+    set(upper, r, t, down_left);
+    for row in r + 1..upper.len() {
+        set(upper, row, t, v);
+    }
+    for row in r2 - 1..=r2 + 1 {
+        for col in 0..=c2 + lw + 1 {
+            set(lower, row, col, ' ');
+        }
+    }
+    for row in 0..r2 {
+        set(lower, row, 0, v);
+    }
+    set(lower, r2, 0, up_right);
+    for col in 1..=c2 + lw + 1 {
+        set(lower, r2, col, h);
+    }
+    // The connector's columns are now just line; drop them if nothing else uses them.
+    let gap = 1..=c2 + lw + 1;
+    if (0..lower.len()).all(|row| row == r2 || gap.clone().all(|col| cell(lower, row, col) == ' ')) {
+        for row in lower.iter_mut() {
+            let end = (*gap.end() + 1).min(row.len());
+            if end > 1 {
+                row.drain(1..end);
+            }
+        }
+    }
+    let mut joint = vec![h; t + 1];
+    joint[0] = down_right;
+    joint[t] = up_left;
+    Some(joint)
 }
 
 fn same_labels(a: &Graph, b: &Graph) -> bool {

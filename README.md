@@ -33,34 +33,37 @@ cargo install --path .
 drawtool diagram.mmd          # or pipe the source on stdin
 drawtool --ascii diagram.mmd  # plain ASCII
 drawtool -d TD diagram.mmd    # override direction (LR or TD)
-drawtool -w 100 diagram.mmd   # column budget (default $COLUMNS or 120, 0 = unlimited)
+drawtool -w 100 diagram.mmd   # column budget (default: terminal width, 0 = unlimited)
 ```
 
 ## Long diagrams
 
-Diagrams are fitted to the column budget without changing direction. A left-to-right
-diagram that is too wide is first drawn with long labels word-wrapped, then broken into
-stacked bands joined by numbered connectors (①, ②, ...). If it still can't fit, drawtool
-prints a `note:` on stderr. Top-down is a mode you choose (`flowchart TD` or `-d TD`),
-never a fallback.
+Diagrams are fitted to your terminal (`$COLUMNS`, else the terminal's width, else 120
+columns; `-w N` overrides) without changing direction. A left-to-right diagram that is too
+wide first gets its long labels word-wrapped, then continues on the next row, like wrapped
+text:
 
 ```
-┌──────────────┐  ╭───────╮                ╭──────────────╮  ╭───────────────╮  ╭────────────────────╮  ╭───╮
-│ diagram text ├─►│ parse ├──nodes, edges─►│ break_cycles ├─►│   layering    ├─►│ crossing reduction ├─►│ ① │
-└──────────────┘  ╰───────╯                ╰──────────────╯  │ + dummy nodes │  ╰────────────────────╯  ╰───╯
-                                                             ╰───────────────╯
-
-╭───╮  ╭─────────────╮  ╭───────────────────────╮  ╭───────────╮       ┌────────┐
-│ ① ├─►│ place: PAVA ├─►│ ports + track routing ├─►│ draw grid ├──str─►│ stdout │
-╰───╯  ╰─────────────╯  ╰───────────────────────╯  ╰───────────╯       └────────┘
+                                                          ╭───────────╮
+                                                        ┌►│ get quote ├────┐
+┌─────────┐  ╭──────╮  ╭────────────╮  ╔════════╗ ┌─yes─┘ ╰───────────╯    │
+│ request ├─►│ auth ├─►│ parse body ├─►║ valid? ╟─┤                        │
+└─────────┘  ╰──────╯  ╰────────────╯  ╚════════╝ └─no──┐ ┌─────┐          │
+                                                        └►│ 400 │          │
+                                                          └─────┘          │
+┌──────────────────────────────────────────────────────────────────────────┘
+│  ╭──────────────╮  ╭─────────────╮  ╭──────────────╮
+└─►│ create order ├─►│ charge card ├─►│ write ledger ├────┐
+   ╰──────────────╯  ╰─────────────╯  ╰──────────────╯    │
+┌─────────────────────────────────────────────────────────┘
+│  ╭─────────────╮  ┌────────┐
+└─►│ notify user ├─►│ 200 OK │
+   ╰─────────────╯  └────────┘
 ```
 
-```
-flowchart LR
-src[diagram text] --> parse(parse) -->|nodes, edges| cyc(break_cycles)
-cyc --> lay(layering<br>+ dummy nodes) --> ord(crossing reduction) --> pos(place: PAVA)
-pos --> route(ports + track routing) --> draw(draw grid) -->|str| out[stdout]
-```
+When several edges cross the same break, the rows are joined by numbered connectors
+(①, ②, ...) instead of lines. If a diagram still can't fit, drawtool prints a `note:` on
+stderr. Top-down is a mode you choose (`flowchart TD` or `-d TD`), never a fallback.
 
 ## Syntax
 

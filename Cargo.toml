@@ -1,12 +1,13 @@
 [package]
 name = "drawtool"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Render Mermaid-style flowcharts as box diagrams in the terminal"
 license = "MIT"
 
 [dependencies]
 regex = { version = "1", default-features = false, features = ["std", "unicode"] }
+terminal_size = "0.4"
 unicode-width = "0.2"
 
 [profile.release]

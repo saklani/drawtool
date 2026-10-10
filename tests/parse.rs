@@ -1,11 +1,11 @@
 //! The flowchart parser, input by input.
 
-use drawtool::{parse, Direction, Shape, Style};
+use drawtool::{parse, Arrow, Direction, Shape, Style};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
 
-/// (style, arrow, label) of the single edge in `src`.
-fn edge(src: &str) -> (Style, bool, Option<String>) {
+/// (style, arrowheads, label) of the single edge in `src`.
+fn edge(src: &str) -> (Style, Arrow, Option<String>) {
     let g = parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
     assert_eq!(g.g.edge_count(), 1, "{src:?}");
     let e = &g.g[EdgeIndex::new(0)];
@@ -14,27 +14,39 @@ fn edge(src: &str) -> (Style, bool, Option<String>) {
 
 #[test]
 fn every_connector_form() {
+    use Arrow::{Both, End};
     use Style::*;
-    let cases: &[(&str, Style, bool, Option<&str>)] = &[
-        ("a --> b", Solid, true, None),
-        ("a-->b", Solid, true, None),
-        ("a ----> b", Solid, true, None),
-        ("a --- b", Solid, false, None),
-        ("a -.-> b", Dotted, true, None),
-        ("a -.- b", Dotted, false, None),
-        ("a ==> b", Thick, true, None),
-        ("a === b", Thick, false, None),
-        ("a -->|yes| b", Solid, true, Some("yes")),
-        ("a -- yes --> b", Solid, true, Some("yes")),
-        ("A--text-->B", Solid, true, Some("text")),
-        ("a -- yes ---> b", Solid, true, Some("yes")),
-        ("a -- no arrow --- b", Solid, false, Some("no arrow")),
-        ("a -. maybe .-> b", Dotted, true, Some("maybe")),
-        ("a -. maybe .- b", Dotted, false, Some("maybe")),
-        ("a == main ==> b", Thick, true, Some("main")),
-        ("a == main === b", Thick, false, Some("main")),
-        ("a -->|\"two<br>lines\"| b", Solid, true, Some("two\nlines")),
-        ("a -->| | b", Solid, true, None),
+    const OPEN: Arrow = Arrow::None;
+    let cases: &[(&str, Style, Arrow, Option<&str>)] = &[
+        ("a --> b", Solid, End, None),
+        ("a-->b", Solid, End, None),
+        ("a ----> b", Solid, End, None),
+        ("a --- b", Solid, OPEN, None),
+        ("a -.-> b", Dotted, End, None),
+        ("a -.- b", Dotted, OPEN, None),
+        ("a ==> b", Thick, End, None),
+        ("a === b", Thick, OPEN, None),
+        ("a -->|yes| b", Solid, End, Some("yes")),
+        ("a -- yes --> b", Solid, End, Some("yes")),
+        ("A--text-->B", Solid, End, Some("text")),
+        ("a -- yes ---> b", Solid, End, Some("yes")),
+        ("a -- no arrow --- b", Solid, OPEN, Some("no arrow")),
+        ("a -. maybe .-> b", Dotted, End, Some("maybe")),
+        ("a -. maybe .- b", Dotted, OPEN, Some("maybe")),
+        ("a == main ==> b", Thick, End, Some("main")),
+        ("a == main === b", Thick, OPEN, Some("main")),
+        ("a -->|\"two<br>lines\"| b", Solid, End, Some("two\nlines")),
+        ("a -->| | b", Solid, End, None),
+        // Two-headed: one edge, a head at each end, laid out like `-->`.
+        ("a <--> b", Solid, Both, None),
+        ("a<---->b", Solid, Both, None),
+        ("a <-.-> b", Dotted, Both, None),
+        ("a <==> b", Thick, Both, None),
+        ("a <-- sync --> b", Solid, Both, Some("sync")),
+        ("a <-->|sync| b", Solid, Both, Some("sync")),
+        ("a <-. sync ..-> b", Dotted, Both, Some("sync")),
+        ("a <== sync ===> b", Thick, Both, Some("sync")),
+        ("a[A] <--> b", Solid, Both, None),
     ];
     for &(src, style, arrow, label) in cases {
         assert_eq!(edge(src), (style, arrow, label.map(String::from)), "{src:?}");
@@ -140,7 +152,7 @@ fn mermaid_syntax_outside_the_subset_is_an_error() {
     assert!(message("flowchart RL\na --> b").contains("`RL` isn't supported"));
     assert!(message("flowchart BT\na --> b").contains("`BT` isn't supported"));
     assert!(message("subgraph S\nx\nend\nS --> y").contains("both a subgraph and a node"));
-    for src in ["a->b", "a <--> b", "a --o b", "a --x b", "a ~~~ b", "a-b --> c"] {
+    for src in ["a->b", "a --o b", "a --x b", "a ~~~ b", "a-b --> c", "a <--- b", "a <-> b", "a o--o b"] {
         assert!(parse(src).is_err(), "{src:?}");
     }
 }

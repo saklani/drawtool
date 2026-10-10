@@ -89,7 +89,7 @@ fn group_titled(graph: &mut Graph, title: &str) -> usize {
 
 /// One graph showing how `before` became `after`: added nodes and edges are
 /// thick with a `+`, removed ones dashed/dotted with a `-`, and nodes or edges
-/// whose label, shape or style changed get a `~`. Nodes are matched by id,
+/// whose label, shape, style or arrowheads changed get a `~`. Nodes are matched by id,
 /// edges by their end ids (parallel edges in order of appearance).
 #[must_use]
 pub fn diff(before: &Graph, after: &Graph) -> Graph {
@@ -119,7 +119,7 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
                 e.style = Style::Thick;
                 e.label = edge_label("+", e.label.as_deref());
             }
-            Some(o) if o.label != e.label || o.style != e.style => {
+            Some(o) if o.label != e.label || o.style != e.style || o.arrow != e.arrow => {
                 e.label = edge_label("~", e.label.as_deref());
             }
             Some(_) => {}

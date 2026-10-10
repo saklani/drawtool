@@ -37,6 +37,14 @@ pub enum Style {
     Thick,
 }
 
+/// Which ends of an edge have an arrowhead: `---`, `-->`, `<-->`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Arrow {
+    None,
+    End,
+    Both,
+}
+
 /// How a node is emphasised: by `--highlight`, or by `--diff`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mark {
@@ -71,7 +79,7 @@ impl NodeDef {
 pub struct EdgeDef {
     pub label: Option<Vec<String>>,
     pub style: Style,
-    pub arrow: bool,
+    pub arrow: Arrow,
 }
 
 /// A `subgraph` block, drawn as a dashed frame around its nodes.

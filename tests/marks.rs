@@ -50,12 +50,18 @@ fn added_and_removed_edges() {
 }
 
 #[test]
-fn edges_whose_label_or_style_changed_are_marked() {
-    let g = diffed("a -->|yes| b\nb --> c\nc --> d", "a -->|ok| b\nb -.-> c\nc --> d");
+fn edges_whose_label_style_or_heads_changed_are_marked() {
+    let g = diffed("a -->|yes| b\nb --> c\nc --> d\nd --> e", "a -->|ok| b\nb -.-> c\nc --> d\nd <--> e");
     let labels: Vec<_> = edges(&g).into_iter().map(|e| (e.2, e.3)).collect();
+    let changed = Some("~".to_string());
     assert_eq!(
         labels,
-        vec![(Style::Solid, Some("~ ok".to_string())), (Style::Dotted, Some("~".to_string())), (Style::Solid, None),]
+        vec![
+            (Style::Solid, Some("~ ok".to_string())),
+            (Style::Dotted, changed.clone()),
+            (Style::Solid, None),
+            (Style::Solid, changed)
+        ]
     );
 }
 

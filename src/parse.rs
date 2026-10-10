@@ -1,6 +1,6 @@
 //! Parser for the Mermaid-style flowchart subset.
 
-use crate::model::{Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
+use crate::model::{Arrow, Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
 use crate::Error;
 use petgraph::graph::{DiGraph, NodeIndex};
 use regex::Regex;
@@ -37,9 +37,15 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
     let rx = |s: &str| Regex::new(s).unwrap();
     Patterns {
         id: rx(r"^\w[\w.:$]*"),
-        // Labelled forms first; a label ends at the first closing arrow, so
-        // `a -- x --- b -- y --> c` is two edges.
+        // Two-headed forms (`<-->`) first, then labelled ones; a label ends at
+        // the first closing arrow, so `a -- x --- b -- y --> c` is two edges.
         connectors: vec![
+            (rx(r"^<--\s*([^\s>-].*?)\s*-{2,}>"), Style::Solid),
+            (rx(r"^<-\.\s*([^\s.>-].*?)\s*\.+->"), Style::Dotted),
+            (rx(r"^<==\s*([^\s=>].*?)\s*={2,}>"), Style::Thick),
+            (rx(r"^<-{2,}>"), Style::Solid),
+            (rx(r"^<-\.+->"), Style::Dotted),
+            (rx(r"^<={2,}>"), Style::Thick),
             (rx(r"^--\s*([^\s>-].*?)\s*(?:-{2,}>|-{3,})"), Style::Solid),
             (rx(r"^-\.\s*([^\s.>-].*?)\s*\.-+>?"), Style::Dotted),
             (rx(r"^==\s*([^\s=>].*?)\s*(?:=+>|={3,})"), Style::Thick),
@@ -107,7 +113,7 @@ fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
     let mut from = start;
     while let Some(off) = s[from..].find(close) {
         let i = from + off;
-        if s[i + close.len()..].trim_start().chars().next().is_none_or(|c| "-=&.%;:".contains(c)) {
+        if s[i + close.len()..].trim_start().chars().next().is_none_or(|c| "-=&.%;:<".contains(c)) {
             return Some(i);
         }
         from = i + 1;
@@ -202,7 +208,11 @@ impl Parser {
                 .iter()
                 .find_map(|(rx, st)| rx.captures(&s[pos..]).map(|c| (c, *st)))
                 .ok_or_else(|| (pos, format!("expected an arrow like --> at {:?}", &s[pos..])))?;
-            let arrow = caps[0].ends_with('>');
+            let arrow = match (caps[0].starts_with('<'), caps[0].ends_with('>')) {
+                (true, _) => Arrow::Both,
+                (_, true) => Arrow::End,
+                _ => Arrow::None,
+            };
             let mut text = caps.get(1).map(|m| m.as_str().to_string());
             pos += caps[0].len();
             if let Some(pm) = PATTERNS.pipe_label.captures(&s[pos..]) {

@@ -26,7 +26,7 @@ mod wireframe;
 pub use fit::{render_fit, wrap_labels};
 pub use layout::render;
 pub use marks::{diff, highlight};
-pub use model::{Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
+pub use model::{Arrow, Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
 pub use parse::parse;
 pub use sequence::{is_sequence, parse_sequence, render_sequence, render_sequence_fit};
 pub use sequence::{Head, Item, Message, Note, NoteSide, Participant, Sequence};

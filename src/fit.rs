@@ -3,11 +3,12 @@
 //! crossing a break wraps around like text, several are joined by numbered
 //! connectors (①). TD only ever wraps labels.
 
-use crate::layout::{node_layers, render};
+use crate::layout::{node_layers, render, scene, Scene};
 use crate::model::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
+use crate::paint::{Layer, Painter, Pt, Stroke};
 use crate::text::{first_fit, wrap, Fit};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// Label wrap widths tried in order; `None` leaves labels as written.
 const WRAPS: [Option<usize>; 4] = [None, Some(24), Some(16), Some(12)];
@@ -142,98 +143,87 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     if cuts.len() < 2 {
         return None;
     }
-    let parts = (0..cuts.len()).map(|b| fits(&cuts, b)).collect::<Option<Vec<_>>>()?;
-    let width = parts.iter().map(|p| text_width(p)).max().unwrap_or(0);
-    Some(Fit { text: join_bands(graph, &band_of(&cuts), &parts, ascii), width, fits: true })
+    let band_of = band_of(&cuts);
+    let graphs: Vec<Graph> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b, ascii)).collect();
+    let scenes = graphs.iter().map(|g| scene(g, Some(Direction::LR), ascii)).collect::<Option<Vec<_>>>()?;
+    let width = scenes.iter().map(|s| text_width(&s.painter.finish())).max().unwrap_or(0);
+    let text = join_bands(graph, &band_of, &graphs, scenes, ascii);
+    (width <= max_width).then_some(Fit { text, width, fits: true })
 }
 
-/// Stack rendered bands, joining each break by a wrap-around line when
-/// exactly one edge crosses it and by a blank line (keeping connectors) else.
-fn join_bands(graph: &Graph, band_of: &[usize], parts: &[String], ascii: bool) -> String {
+/// Stack the bands, joining each break by a wrap-around line when exactly
+/// one edge crosses it and by a blank row (keeping connectors) else.
+fn join_bands(graph: &Graph, band_of: &[usize], graphs: &[Graph], scenes: Vec<Scene>, ascii: bool) -> String {
     let numbers = connector_numbers(graph, band_of);
-    let nb = parts.len();
+    let nb = graphs.len();
     let (mut outs, mut ins) = (vec![HashSet::new(); nb], vec![HashSet::new(); nb]);
     for e in graph.edges.iter().filter(|e| band_of[e.src] != band_of[e.dst]) {
         outs[band_of[e.src]].insert(numbers[&e.dst]);
         ins[band_of[e.dst]].insert(numbers[&e.dst]);
     }
-    let mut grids: Vec<Grid> = parts.iter().map(|p| p.lines().map(cells).collect()).collect();
-    let mut out: Grid = Vec::new();
-    for b in 0..nb {
+    let connector = |b: usize, k: usize| graphs[b].nodes.iter().position(|n| n.id == format!("\0c{k}"));
+    let mut canvas = Painter::new(ascii);
+    canvas.mark_crossings = true;
+    // The next free row, and the previous band's boxes where they sit on the canvas.
+    let (mut top, mut above): (i64, Vec<(Pt, Pt)>) = (0, vec![]);
+    for (b, scene) in scenes.into_iter().enumerate() {
+        let Some(((x0, y0), (_, y1))) = scene.painter.bounds() else { continue };
+        // The band on its own, with its top-left at (0, 0).
+        let mut band = Scene { painter: Painter::new(ascii), boxes: scene.boxes };
+        band.painter.paste(&scene.painter, (-x0, -y0));
+        band.boxes.iter_mut().for_each(|((x, y), _)| (*x, *y) = (*x - x0, *y - y0));
+        let mut route = None;
         if b > 0 {
             let only = outs[b - 1].iter().next().copied().filter(|_| outs[b - 1].len() == 1 && ins[b] == outs[b - 1]);
             let single = only
                 .filter(|k| (0..nb).all(|o| (o == b - 1 || !outs[o].contains(k)) && (o == b || !ins[o].contains(k))));
-            let joint = single.and_then(|k| wrap_around(&mut out, &mut grids[b], &connector_label(k, ascii), ascii));
-            out.push(joint.unwrap_or_default());
+            route = single.and_then(|k| {
+                let (from, to) = (connector(b - 1, k)?, connector(b, k)?);
+                wrap_around(&mut canvas, above[from], &mut band, to, top)
+            });
+            top += 1;
         }
-        out.append(&mut grids[b]);
-    }
-    out.iter()
-        .map(|r| r.iter().filter(|&&c| c != WIDE).collect::<String>().trim_end().to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Rows of display cells; WIDE marks the right half of a double-width char.
-type Grid = Vec<Vec<char>>;
-const WIDE: char = '\0';
-
-fn cells(line: &str) -> Vec<char> {
-    line.chars().flat_map(|ch| if ch.width() == Some(2) { vec![ch, WIDE] } else { vec![ch] }).collect()
-}
-
-fn cell(grid: &Grid, r: usize, c: usize) -> char {
-    grid.get(r).and_then(|row| row.get(c)).copied().unwrap_or(' ')
-}
-
-fn set(grid: &mut Grid, r: usize, cols: impl IntoIterator<Item = usize>, ch: char) {
-    for c in cols {
-        if grid[r].len() <= c {
-            grid[r].resize(c + 1, ' ');
+        canvas.paste(&band.painter, (0, top));
+        if let Some(pts) = route {
+            let net = canvas.net();
+            canvas.line(&pts, net, Stroke::LIGHT, Layer::Main);
         }
-        grid[r][c] = ch;
+        above = band.boxes.iter().map(|&((x, y), size)| ((x, y + top), size)).collect();
+        top += y1 - y0 + 1;
     }
+    canvas.finish()
 }
 
-/// Replace the out-connector at the end of `upper` and the in-connector at
-/// the start of `lower` with one line that turns down, runs back left along a
-/// new row, and enters `lower`. Returns that new row, or `None` (leaving both
-/// grids untouched) if anything is in the way.
-fn wrap_around(upper: &mut Grid, lower: &mut Grid, label: &str, ascii: bool) -> Option<Vec<char>> {
-    let label: Vec<char> = label.chars().collect();
-    let find = |g: &Grid| {
-        g.iter().enumerate().find_map(|(r, row)| row.windows(label.len()).position(|w| w == label).map(|c| (r, c)))
-    };
-    let ((r, c), (r2, c2), lw) = (find(upper)?, find(lower)?, label.len());
-    let corner = if ascii { '.' } else { '╭' };
-    let blocked = (r + 2..upper.len()).any(|row| cell(upper, row, c) != ' ')
-        || (0..r2.saturating_sub(1)).any(|row| cell(lower, row, 0) != ' ');
-    let anchored = r > 0 && r2 > 0 && c >= 3 && c2 == 2;
-    if !anchored || cell(upper, r - 1, c - 2) != corner || cell(lower, r2 - 1, 0) != corner || blocked {
+/// Make way for one line in place of the out-connector `upper` (a box on
+/// `canvas`) and the in-connector `lower.boxes[k]` at the start of the next
+/// band: out of `upper`, down to the row `joint` below everything drawn,
+/// back left along it, and down into `lower`, which goes under that row.
+/// Erases both connectors and returns the line's points on the canvas, or
+/// `None` (changing nothing) if anything is in the way.
+fn wrap_around(canvas: &mut Painter, upper: (Pt, Pt), lower: &mut Scene, k: usize, joint: i64) -> Option<Vec<Pt>> {
+    let (((x, y), (w, h)), ((lx, ly), (lw, lh))) = (upper, lower.boxes[k]);
+    // Down from the upper label's first column; into the lower one on its label's row.
+    let (r, c, r2) = (y + 1, x + 2, ly + 1);
+    let blocked = (y + h..joint).any(|row| canvas.cell((c, row)) != ' ')
+        || (0..ly).any(|row| lower.painter.cell((0, row)) != ' ');
+    // A taller connector has edges of several styles entering it on their own ports.
+    if (h, lh) != (3, 3) || x < 1 || lx != 0 || blocked {
         return None;
     }
-    let [h, v, down_left, up_left, up_right, down_right] =
-        if ascii { ['-', '|', '+', '+', '+', '+'] } else { ['─', '│', '┐', '┘', '└', '┌'] };
-    (r - 1..=r + 1).for_each(|row| set(upper, row, c - 2..=c + lw + 1, ' '));
-    set(upper, r, c - 3..c, h);
-    set(upper, r, [c], down_left);
-    (r + 1..upper.len()).for_each(|row| set(upper, row, [c], v));
-    (r2 - 1..=r2 + 1).for_each(|row| set(lower, row, 0..=c2 + lw + 1, ' '));
-    (0..r2).for_each(|row| set(lower, row, [0], v));
-    set(lower, r2, [0], up_right);
-    set(lower, r2, 1..=c2 + lw + 1, h);
-    // The connector's columns are now just line; drop them if nothing else uses them.
-    let gap = 1..=c2 + lw + 1;
-    if (0..lower.len()).all(|row| row == r2 || gap.clone().all(|col| cell(lower, row, col) == ' ')) {
-        for row in lower.iter_mut() {
-            let end = (gap.end() + 1).min(row.len());
-            if end > 1 {
-                row.drain(1..end);
-            }
-        }
-    }
-    let mut joint = vec![h; c + 1];
-    (joint[0], joint[c]) = (down_right, up_left);
-    Some(joint)
+    // Both connectors, and the arrowhead into the upper one.
+    canvas.erase((x, y), (x + w - 1, y + h - 1));
+    canvas.erase((x - 1, r), (x - 1, r));
+    lower.painter.erase((0, ly), (lw - 1, ly + lh - 1));
+    // The lower connector's columns are now just line: drop them if nothing else uses them.
+    let ((_, top), (_, bottom)) = lower.painter.bounds()?;
+    let unused = (top..=bottom).all(|row| row == r2 || (1..lw).all(|col| lower.painter.cell((col, row)) == ' '));
+    let end = if unused {
+        lower.painter.remove_columns(1, lw - 1);
+        lower.boxes.iter_mut().filter(|((x, _), _)| *x >= lw).for_each(|((x, _), _)| *x -= lw - 1);
+        1
+    } else {
+        lw
+    };
+    let below = joint + 1;
+    Some(vec![(x - 1, r), (c, r), (c, joint), (0, joint), (0, below + r2), (end, below + r2)])
 }

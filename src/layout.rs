@@ -340,11 +340,23 @@ struct Layout<Phase> {
 /// Render a parsed graph as text. `direction` overrides the graph's own.
 #[must_use]
 pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> String {
+    scene(graph, direction, ascii).map_or_else(String::new, |s| s.painter.finish())
+}
+
+/// A laid-out graph before it becomes text: what was painted, and each
+/// node's box (top-left, size) by its index in the graph.
+pub(crate) struct Scene {
+    pub painter: Painter,
+    pub boxes: Vec<(Pt, Pt)>,
+}
+
+/// Lay out and paint `graph`; `None` if it has no nodes.
+pub(crate) fn scene(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Option<Scene> {
     if graph.nodes.is_empty() {
-        return String::new();
+        return None;
     }
     let td = direction.unwrap_or(graph.direction) == Direction::TD;
-    Layout::new(graph, td).order().place().route().paint(ascii)
+    Some(Layout::new(graph, td).order().place().route().paint(ascii))
 }
 
 impl<P> Layout<P> {
@@ -835,7 +847,17 @@ impl Layout<Routed> {
         }
     }
 
-    fn paint(mut self, ascii: bool) -> String {
+    /// Each real node's box (top-left, size); real nodes come first.
+    fn boxes(&self) -> Vec<(Pt, Pt)> {
+        let real = self.nodes.iter().take_while(|n| n.kind == Kind::Real);
+        real.map(|n| {
+            let size = if self.td { (n.box_csize(), n.lsize) } else { (n.lsize, n.box_csize()) };
+            (self.phys(self.bstart[n.layer], n.pos), size)
+        })
+        .collect()
+    }
+
+    fn paint(mut self, ascii: bool) -> Scene {
         self.coordinates();
         let mut p = Painter::new(ascii);
         p.mark_crossings = true;
@@ -971,7 +993,7 @@ impl Layout<Routed> {
                 p.text(x, y0, &title);
             }
         }
-        p.finish()
+        Scene { boxes: self.boxes(), painter: p }
     }
 }
 

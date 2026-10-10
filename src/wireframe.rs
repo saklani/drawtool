@@ -13,7 +13,7 @@
 
 use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::parse::{strip_comment, unquote};
-use crate::text::{truncate, width, wrap, Fit};
+use crate::text::{block_width, truncate, width, wrap, Fit};
 use crate::Error;
 
 /// Screen width when the header doesn't give one (`width=N`).
@@ -458,6 +458,6 @@ pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> Fi
         x += w + SCREEN_GAP;
     }
     let text = p.finish();
-    let width = text.lines().map(width).max().unwrap_or(0) as usize;
+    let width = block_width(&text) as usize;
     Fit { text, width, fits: max_width == 0 || width <= max_width }
 }

@@ -6,16 +6,11 @@
 use crate::layout::{node_layers, render, scene, Scene};
 use crate::model::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::paint::{Layer, Painter, Pt, Stroke};
-use crate::text::{first_fit, wrap, Fit};
+use crate::text::{block_width, first_fit, wrap, Fit};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use unicode_width::UnicodeWidthStr;
 
 /// Label wrap widths tried in order; `None` leaves labels as written.
 const WRAPS: [Option<usize>; 4] = [None, Some(24), Some(16), Some(12)];
-
-pub fn text_width(text: &str) -> usize {
-    text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0)
-}
 
 /// Copy of `graph` with every node and edge label wrapped at `max` columns.
 #[must_use]
@@ -102,7 +97,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     };
     let fits = |cuts: &[usize], b: usize| {
         let text = render(&band_graph(graph, &band_of(cuts), b, ascii), Some(Direction::LR), ascii);
-        (text_width(&text) <= max_width).then_some(text)
+        (block_width(&text) as usize <= max_width).then_some(text)
     };
     // Height of band [i, j) of the distinct layers, if it fits on its own.
     let n = distinct.len();
@@ -146,7 +141,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     let band_of = band_of(&cuts);
     let graphs: Vec<Graph> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b, ascii)).collect();
     let scenes = graphs.iter().map(|g| scene(g, Some(Direction::LR), ascii)).collect::<Option<Vec<_>>>()?;
-    let width = scenes.iter().map(|s| text_width(&s.painter.finish())).max().unwrap_or(0);
+    let width = scenes.iter().map(|s| block_width(&s.painter.finish()) as usize).max().unwrap_or(0);
     let text = join_bands(graph, &band_of, &graphs, scenes, ascii);
     (width <= max_width).then_some(Fit { text, width, fits: true })
 }

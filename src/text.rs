@@ -11,6 +11,11 @@ pub fn width(s: &str) -> i64 {
     s.chars().map(char_width).sum()
 }
 
+/// The width of the widest line: the columns a block of text needs.
+pub fn block_width(s: &str) -> i64 {
+    s.lines().map(width).max().unwrap_or(0)
+}
+
 /// Cut to at most `w` columns, ending in `…` if anything was dropped.
 pub fn truncate(s: &str, w: i64) -> String {
     if width(s) <= w {
@@ -59,7 +64,7 @@ pub struct Fit {
 pub fn first_fit(max: usize, attempts: impl IntoIterator<Item = String>) -> Fit {
     let mut best: Option<Fit> = None;
     for text in attempts {
-        let width = text.lines().map(width).max().unwrap_or(0) as usize;
+        let width = block_width(&text) as usize;
         if max == 0 || width <= max {
             return Fit { text, width, fits: true };
         }

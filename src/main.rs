@@ -86,22 +86,21 @@ fn default_width() -> usize {
 
 /// Read a diagram from `path`, or stdin when `None` or `-`.
 fn read_source(path: Option<&str>) -> Result<String, String> {
-    match path.filter(|p| *p != "-") {
-        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")),
-        None => {
-            let mut t = String::new();
-            std::io::stdin().read_to_string(&mut t).map_err(|e| format!("reading stdin: {e}"))?;
-            Ok(t)
-        }
+    if let Some(path) = path.filter(|p| *p != "-") {
+        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
+    } else {
+        let mut t = String::new();
+        std::io::stdin().read_to_string(&mut t).map_err(|e| format!("reading stdin: {e}"))?;
+        Ok(t)
     }
 }
 
-fn run(args: Args) -> Result<(String, usize, bool, usize), String> {
+fn run(args: &Args) -> Result<(String, usize, bool, usize), Box<dyn std::error::Error>> {
     let width = args.max_width.unwrap_or_else(default_width);
     let text = read_source(args.file.as_deref())?;
     let marks = args.diff.is_some() || args.highlight.is_some();
     if (is_wireframe(&text) || is_sequence(&text)) && marks {
-        return Err("--diff and --highlight only work on flowcharts".to_string());
+        return Err("--diff and --highlight only work on flowcharts".into());
     }
     if is_wireframe(&text) {
         let f = render_wireframe_fit(&parse_wireframe(&text)?, args.ascii, width);
@@ -123,7 +122,7 @@ fn run(args: Args) -> Result<(String, usize, bool, usize), String> {
 }
 
 fn main() -> ExitCode {
-    match run(Args::parse()) {
+    match run(&Args::parse()) {
         Ok((text, width, fits, budget)) => {
             if !fits {
                 eprintln!("drawtool: note: {width} columns wide, over the {budget}-column budget");

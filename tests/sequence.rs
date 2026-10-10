@@ -120,10 +120,10 @@ fn wide_characters_keep_lifelines_aligned() {
 
 #[test]
 fn errors_name_the_line() {
-    assert!(parse_sequence("sequenceDiagram\na->>b: ok\nnonsense here").unwrap_err().starts_with("line 3:"));
-    assert!(parse_sequence("sequenceDiagram\nloop x\na->>b").unwrap_err().starts_with("line 2:"));
-    assert!(parse_sequence("sequenceDiagram\nend").unwrap_err().starts_with("line 2:"));
-    assert!(parse_sequence("sequenceDiagram\nelse x").unwrap_err().starts_with("line 2:"));
+    assert_eq!(parse_sequence("sequenceDiagram\na->>b: ok\nnonsense here").unwrap_err().line, Some(3));
+    assert_eq!(parse_sequence("sequenceDiagram\nloop x\na->>b").unwrap_err().line, Some(2));
+    assert_eq!(parse_sequence("sequenceDiagram\nend").unwrap_err().line, Some(2));
+    assert_eq!(parse_sequence("sequenceDiagram\nelse x").unwrap_err().line, Some(2));
 }
 
 #[test]

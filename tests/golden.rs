@@ -13,7 +13,7 @@ fn examples_match_golden_output() {
     let mut count = 0;
     for entry in fs::read_dir(root.join("examples")).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().map_or(true, |e| e != "mmd") {
+        if path.extension().is_none_or(|e| e != "mmd") {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap();

@@ -22,3 +22,10 @@ strip = true
 
 [dev-dependencies]
 unicode-width = "0.2"
+
+[lints.clippy]
+must_use_candidate = "warn"
+missing_errors_doc = "warn"
+needless_pass_by_value = "warn"
+needless_for_each = "warn"
+single_match_else = "warn"

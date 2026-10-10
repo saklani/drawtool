@@ -3,6 +3,7 @@
 //! so layout stays unaware of them.
 
 use crate::parse::{EdgeDef, Graph, Mark, Style};
+use crate::Error;
 use std::collections::{HashMap, HashSet};
 
 /// Split `a, b c` / `a,b,c` into ids.
@@ -13,11 +14,14 @@ pub fn split_ids(text: &str) -> Vec<String> {
 /// Mark the nodes on `path` (ids, in order) and draw the edges between
 /// consecutive ones thick. Every id must exist and every consecutive pair must
 /// be joined by an edge, in either direction.
-pub fn highlight(graph: &mut Graph, path: &[String]) -> Result<(), String> {
+/// # Errors
+///
+/// An id that isn't a node, or two consecutive ids with no edge between them.
+pub fn highlight(graph: &mut Graph, path: &[String]) -> Result<(), Error> {
     let index: HashMap<&str, usize> = graph.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
     let mut ids = Vec::new();
     for id in path {
-        ids.push(*index.get(id.as_str()).ok_or_else(|| format!("highlight: no node {id:?}"))?);
+        ids.push(*index.get(id.as_str()).ok_or_else(|| Error::new(format!("highlight: no node {id:?}")))?);
     }
     for &i in &ids {
         graph.nodes[i].mark = Mark::Highlight;
@@ -30,7 +34,10 @@ pub fn highlight(graph: &mut Graph, path: &[String]) -> Result<(), String> {
             found = true;
         }
         if !found {
-            return Err(format!("highlight: no edge between {:?} and {:?}", graph.nodes[a].id, graph.nodes[b].id));
+            return Err(Error::new(format!(
+                "highlight: no edge between {:?} and {:?}",
+                graph.nodes[a].id, graph.nodes[b].id
+            )));
         }
     }
     Ok(())
@@ -48,6 +55,7 @@ fn prefixed(prefix: &str, lines: &[String]) -> Vec<String> {
 /// One graph showing how `before` became `after`: added nodes and edges are
 /// thick with a `+`, removed ones dashed/dotted with a `-`, and nodes whose
 /// label changed get a `~`. Nodes and edges are matched by id.
+#[must_use]
 pub fn diff(before: &Graph, after: &Graph) -> Graph {
     let mut g = after.clone();
     let old: HashMap<&str, usize> = before.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();

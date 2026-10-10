@@ -3,7 +3,7 @@ use drawtool::{parse, render};
 #[test]
 fn parse_error_names_the_line() {
     let err = parse("a --> b\nb -->\n").unwrap_err();
-    assert!(err.starts_with("line 2:"), "{err}");
+    assert_eq!(err.line, Some(2), "{err}");
 }
 
 #[test]
@@ -103,9 +103,9 @@ fn highlight_marks_nodes_and_thickens_edges() {
 #[test]
 fn highlight_rejects_unknown_nodes_and_missing_edges() {
     let err = parse("a --> b\n%% highlight: a, zz").unwrap_err();
-    assert!(err.starts_with("line 2:") && err.contains("zz"), "{err}");
+    assert!(err.line == Some(2) && err.message.contains("zz"), "{err}");
     let mut g = parse("a --> b --> c").unwrap();
-    assert!(drawtool::highlight(&mut g, &["a".into(), "c".into()]).unwrap_err().contains("no edge"));
+    assert!(drawtool::highlight(&mut g, &["a".into(), "c".into()]).unwrap_err().message.contains("no edge"));
 }
 
 #[test]
@@ -131,8 +131,8 @@ fn subgraph_membership_and_errors() {
     assert_eq!(g.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["API server", "inner"]);
     let group = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap().group;
     assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(0), Some(0), Some(1), None));
-    assert!(parse("a --> b\nend").unwrap_err().contains("without a matching"));
-    assert!(parse("subgraph x\na").unwrap_err().contains("never closed"));
+    assert!(parse("a --> b\nend").unwrap_err().message.contains("without a matching"));
+    assert!(parse("subgraph x\na").unwrap_err().message.contains("never closed"));
 }
 
 #[test]

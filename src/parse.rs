@@ -1,5 +1,6 @@
 //! Parser for the Mermaid-style flowchart subset.
 
+use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -48,6 +49,7 @@ pub struct NodeDef {
 }
 
 impl NodeDef {
+    #[must_use]
     pub fn new(id: &str, lines: Vec<String>, shape: Shape) -> Self {
         NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, group: None, explicit: true }
     }
@@ -131,6 +133,7 @@ fn quote(s: &str) -> String {
 }
 
 /// Strip quotes, expand `<br>` / `\n`, split into trimmed lines.
+#[must_use]
 pub fn clean_label(text: &str) -> Vec<String> {
     let mut t = text.trim();
     let mut cs = t.chars();
@@ -172,8 +175,8 @@ struct Parser {
     nodes: Vec<NodeDef>,
     index: HashMap<String, usize>,
     edges: Vec<EdgeDef>,
-    /// Open `subgraph` blocks, innermost last.
-    open: Vec<usize>,
+    /// Open `subgraph` blocks (group, line), innermost last.
+    open: Vec<(usize, usize)>,
 }
 
 impl Parser {
@@ -181,26 +184,23 @@ impl Parser {
         let m = patterns().id.find(&s[pos..]).ok_or_else(|| format!("expected a node id at {}", quote(&s[pos..])))?;
         let id = m.as_str().to_string();
         let pos = pos + m.end();
-        let group = self.open.last().copied();
-        let idx = match self.index.get(&id) {
-            Some(&i) => {
-                if self.nodes[i].group.is_none() {
-                    self.nodes[i].group = group;
-                }
-                i
+        let group = self.open.last().map(|o| o.0);
+        let idx = if let Some(&i) = self.index.get(&id) {
+            if self.nodes[i].group.is_none() {
+                self.nodes[i].group = group;
             }
-            None => {
-                self.nodes.push(NodeDef {
-                    id: id.clone(),
-                    lines: vec![id.clone()],
-                    shape: Shape::Box,
-                    mark: Mark::None,
-                    group,
-                    explicit: false,
-                });
-                self.index.insert(id.clone(), self.nodes.len() - 1);
-                self.nodes.len() - 1
-            }
+            i
+        } else {
+            self.nodes.push(NodeDef {
+                id: id.clone(),
+                lines: vec![id.clone()],
+                shape: Shape::Box,
+                mark: Mark::None,
+                group,
+                explicit: false,
+            });
+            self.index.insert(id.clone(), self.nodes.len() - 1);
+            self.nodes.len() - 1
         };
         for &(opener, closer, shape) in SHAPES {
             if s[pos..].starts_with(opener) {
@@ -265,7 +265,12 @@ impl Parser {
 }
 
 /// Parse diagram source into a graph.
-pub fn parse(text: &str) -> Result<Graph, String> {
+///
+/// # Errors
+///
+/// A line that isn't valid flowchart syntax, an unbalanced `subgraph`/`end`,
+/// or a `%% highlight:` path that doesn't exist.
+pub fn parse(text: &str) -> Result<Graph, Error> {
     let pats = patterns();
     let mut direction = Direction::LR;
     let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new(), open: Vec::new() };
@@ -283,12 +288,12 @@ pub fn parse(text: &str) -> Result<Graph, String> {
         if let Some(c) = pats.subgraph.captures(line) {
             let title = c.get(2).or_else(|| c.get(1)).or_else(|| c.get(3)).map_or("", |m| m.as_str());
             groups.push(Group { title: clean_label(title).join(" ") });
-            p.open.push(groups.len() - 1);
+            p.open.push((groups.len() - 1, lineno + 1));
             continue;
         }
         if line == "end" {
             if p.open.pop().is_none() {
-                return Err(format!("line {}: `end` without a matching `subgraph`", lineno + 1));
+                return Err(Error::at(lineno + 1, "`end` without a matching `subgraph`"));
             }
             continue;
         }
@@ -303,14 +308,14 @@ pub fn parse(text: &str) -> Result<Graph, String> {
         if pats.bare_header.is_match(line) || pats.ignored.is_match(line) {
             continue;
         }
-        p.statement(line).map_err(|e| format!("line {}: {}", lineno + 1, e))?;
+        p.statement(line).map_err(|e| Error::at(lineno + 1, e))?;
     }
-    if !p.open.is_empty() {
-        return Err(format!("`subgraph {}` is never closed with `end`", groups[p.open[0]].title));
+    if let Some(&(g, line)) = p.open.first() {
+        return Err(Error::at(line, format!("`subgraph {}` is never closed with `end`", groups[g].title)));
     }
     let mut graph = Graph { direction, nodes: p.nodes, edges: p.edges, groups };
     if let Some((lineno, ids)) = highlight {
-        crate::marks::highlight(&mut graph, &ids).map_err(|e| format!("line {lineno}: {e}"))?;
+        crate::marks::highlight(&mut graph, &ids).map_err(|e| Error::at(lineno, e.message))?;
     }
     Ok(graph)
 }

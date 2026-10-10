@@ -232,6 +232,7 @@ fn layer_graph(graph: &Graph, ascii: bool) -> (Vec<Node>, Vec<Edge>, Vec<Vec<usi
 
 /// Layer index of every real node, as the layout would assign it. Labelled
 /// edges take an extra layer for the label.
+#[must_use]
 pub fn node_layers(graph: &Graph) -> Vec<usize> {
     layer_graph(graph, false).0.iter().take(graph.nodes.len()).map(|n| n.layer).collect()
 }
@@ -256,6 +257,7 @@ struct Layout<'g> {
 }
 
 /// Render a parsed graph as text. `direction` overrides the graph's own.
+#[must_use]
 pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> String {
     if graph.nodes.is_empty() {
         return String::new();
@@ -313,12 +315,11 @@ impl Layout<'_> {
             for w in chain.windows(2) {
                 let bundle = !rev && self.nodes[w[1]].kind == Kind::Real;
                 for k in self.nodes[w[0]].layer + 1..self.nodes[w[1]].layer {
-                    let d = match shared.get(&(w[1], k, style)).filter(|_| bundle) {
-                        Some(&d) => d,
-                        None => {
-                            self.nodes.push(Node { layer: k, ..Node::new(vec![], Kind::Dummy) });
-                            self.nodes.len() - 1
-                        }
+                    let d = if let Some(&d) = shared.get(&(w[1], k, style)).filter(|_| bundle) {
+                        d
+                    } else {
+                        self.nodes.push(Node { layer: k, ..Node::new(vec![], Kind::Dummy) });
+                        self.nodes.len() - 1
                     };
                     if bundle {
                         shared.insert((w[1], k, style), d);

@@ -34,6 +34,7 @@ struct Arm {
     style: Style,
 }
 
+#[must_use]
 pub fn char_width(c: char) -> i64 {
     c.width().unwrap_or(1).max(1) as i64
 }
@@ -75,7 +76,7 @@ pub fn first_fit(max: usize, attempts: impl IntoIterator<Item = String>) -> Fit 
         if max == 0 || width <= max {
             return Fit { text, width, fits: true };
         }
-        if best.as_ref().map_or(true, |b| width < b.width) {
+        if best.as_ref().is_none_or(|b| width < b.width) {
             best = Some(Fit { text, width, fits: false });
         }
     }
@@ -94,6 +95,7 @@ pub struct Painter {
 }
 
 impl Painter {
+    #[must_use]
     pub fn new(ascii: bool) -> Self {
         Painter { ascii, ..Default::default() }
     }
@@ -160,6 +162,7 @@ impl Painter {
     }
 
     /// No text, symbol or main line in this cell.
+    #[must_use]
     pub fn is_free(&self, cell: Pt) -> bool {
         !self.glyphs.contains_key(&cell) && !self.lines[0].contains_key(&cell)
     }
@@ -178,51 +181,49 @@ impl Painter {
         pair[usize::from(!vertical)]
     }
 
-    fn junction(&self, bits: u8, w: [Option<Weight>; 4], round: bool) -> char {
-        let present: Vec<Weight> = w.iter().flatten().copied().collect();
+    /// The glyph where lines meet. Arms are the weights reaching up, down,
+    /// left and right; a light edge meeting a heavy or double border gets a
+    /// mixed tee (`┯`, `╤`, ...).
+    fn junction(&self, bits: u8, arms: [Option<Weight>; 4], round: bool) -> char {
+        use Weight::{Double, Heavy, Light};
+        let present: Vec<Weight> = arms.iter().flatten().copied().collect();
         let all = |k: Weight| present.iter().all(|&p| p == k);
-        let [wu, wd, wl, wr] = w;
         if self.ascii {
-            return match () {
-                _ if all(Weight::Heavy) => '#',
-                _ if round => ['\'', '.'][usize::from(bits & D != 0)],
-                _ => '+',
+            return if all(Heavy) {
+                '#'
+            } else if round && bits & D != 0 {
+                '.'
+            } else if round {
+                '\''
+            } else {
+                '+'
             };
         }
-        let corner = |set: [char; 4]| match bits {
-            b if b == D | R => Some(set[0]),
-            b if b == D | L => Some(set[1]),
-            b if b == U | R => Some(set[2]),
-            b if b == U | L => Some(set[3]),
-            _ => None,
+        // Index into the rows below: four corners, four tees, then the cross.
+        let shapes = [D | R, D | L, U | R, U | L, U | D | R, U | D | L, D | L | R, U | L | R];
+        let i = shapes.iter().position(|&b| b == bits).unwrap_or(8);
+        let [up, down, left, right] = arms;
+        let border = if (bits == U | D | R && right == Some(Light)) || (bits == U | D | L && left == Some(Light)) {
+            up.filter(|_| up == down)
+        } else if (bits == D | L | R && down == Some(Light)) || (bits == U | L | R && up == Some(Light)) {
+            left.filter(|_| left == right)
+        } else {
+            None
         };
-        let tee = |heavy: char, double: char, k: Option<Weight>| match k {
-            Some(Weight::Heavy) => Some(heavy),
-            Some(Weight::Double) => Some(double),
-            _ => None,
+        let row = if round && all(Light) {
+            "╭╮╰╯"
+        } else if all(Heavy) {
+            "┏┓┗┛"
+        } else if all(Double) {
+            "╔╗╚╝"
+        } else if border == Some(Heavy) {
+            "┌┐└┘┠┨┯┷"
+        } else if border == Some(Double) {
+            "┌┐└┘╟╢╤╧"
+        } else {
+            ""
         };
-        let light = Some(Weight::Light);
-        let found = match () {
-            _ if round && all(Weight::Light) => corner(['╭', '╮', '╰', '╯']),
-            _ if all(Weight::Heavy) => corner(['┏', '┓', '┗', '┛']),
-            _ if all(Weight::Double) => corner(['╔', '╗', '╚', '╝']),
-            _ if bits == L | R | D && wl == wr && wd == light => tee('┯', '╤', wl),
-            _ if bits == L | R | U && wl == wr && wu == light => tee('┷', '╧', wl),
-            _ if bits == U | D | R && wu == wd && wr == light => tee('┠', '╟', wu),
-            _ if bits == U | D | L && wu == wd && wl == light => tee('┨', '╢', wu),
-            _ => None,
-        };
-        found.unwrap_or(match bits {
-            b if b == D | R => '┌',
-            b if b == D | L => '┐',
-            b if b == U | R => '└',
-            b if b == U | L => '┘',
-            b if b == U | D | R => '├',
-            b if b == U | D | L => '┤',
-            b if b == D | L | R => '┬',
-            b if b == U | L | R => '┴',
-            _ => '┼',
-        })
+        row.chars().nth(i).or_else(|| "┌┐└┘├┤┬┴".chars().nth(i)).unwrap_or('┼')
     }
 
     fn resolve(&self, cell: Pt, arms: &[Arm]) -> char {
@@ -258,6 +259,7 @@ impl Painter {
 
     /// Everything drawn so far, as trimmed lines (top-left at the smallest
     /// coordinates used).
+    #[must_use]
     pub fn finish(&self) -> String {
         let mut out: HashMap<Pt, char> = HashMap::new();
         for layer in self.lines.iter().rev() {

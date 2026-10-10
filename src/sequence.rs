@@ -7,6 +7,7 @@
 
 use crate::paint::{first_fit, width, wrap, Fit, Painter, Weight};
 use crate::parse::{clean_label, Style};
+use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -115,7 +116,12 @@ fn label(text: Option<&str>) -> Vec<String> {
 }
 
 /// Parse sequence diagram source.
-pub fn parse_sequence(text: &str) -> Result<Sequence, String> {
+///
+/// # Errors
+///
+/// A line that isn't a participant, message, note or block keyword, or an
+/// unbalanced block.
+pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
     let p = patterns();
     let (mut parts, mut index): (Vec<Participant>, HashMap<String, usize>) = Default::default();
     let mut get = |id: &str, parts: &mut Vec<Participant>| {
@@ -147,7 +153,7 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, String> {
             let a = get(&c[2], &mut parts);
             let z = c.get(3).map_or(a, |m| get(m.as_str(), &mut parts));
             if side != NoteSide::Over && a != z {
-                return Err(format!("line {lineno}: only `Note over` can span two participants"));
+                return Err(Error::at(lineno, "only `Note over` can span two participants"));
             }
             items.push(Item::Note(Note {
                 side,
@@ -156,14 +162,14 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, String> {
                 lines: label(c.get(4).map(|m| m.as_str())),
             }));
         } else if line == "end" {
-            open.pop().ok_or_else(|| format!("line {lineno}: `end` without an open block"))?;
+            open.pop().ok_or_else(|| Error::at(lineno, "`end` without an open block"))?;
             items.push(Item::End);
         } else if let Some(c) = p.start.captures(line) {
             open.push((c[1].to_string(), lineno));
             items.push(Item::Start { kind: c[1].to_string(), text: opt(c.get(2)) });
         } else if let Some(c) = p.divider.captures(line) {
             if open.is_empty() {
-                return Err(format!("line {lineno}: `{}` outside a block", &c[1]));
+                return Err(Error::at(lineno, format!("`{}` outside a block", &c[1])));
             }
             items.push(Item::Divider { kind: c[1].to_string(), text: opt(c.get(2)) });
         } else if let Some(c) = p.message.captures(line) {
@@ -176,11 +182,11 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, String> {
             let lines = label(c.get(4).map(|m| m.as_str()));
             items.push(Item::Message(Message { from, to, lines, dotted: arrow.starts_with("--"), head }));
         } else {
-            return Err(format!("line {lineno}: cannot parse {line:?} (expected a message like A->>B: text)"));
+            return Err(Error::at(lineno, format!("cannot parse {line:?} (expected a message like A->>B: text)")));
         }
     }
     if let Some((kind, lineno)) = open.pop() {
-        return Err(format!("line {lineno}: `{kind}` is never closed with `end`"));
+        return Err(Error::at(lineno, format!("`{kind}` is never closed with `end`")));
     }
     Ok(Sequence { participants: parts, items })
 }
@@ -230,18 +236,26 @@ fn block_title(kind: &str, text: &str) -> String {
     }
 }
 
-/// A frame opened by `loop`/`alt`/..., in order of its `Start`, fitted
-/// around its contents: (title, left, right).
-fn frames(items: &[Item], x: &[i64]) -> Vec<(String, i64, i64)> {
-    let mut out: Vec<(String, i64, i64)> = Vec::new();
-    let mut stack: Vec<(usize, Option<(i64, i64)>, i64)> = Vec::new(); // frame, content extent, title room
-    let grow = |e: &mut Option<(i64, i64)>, (lo, hi): (i64, i64)| {
-        *e = Some(e.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))))
-    };
+/// A frame opened by `loop`/`alt`/..., spanning columns `left..=right`.
+struct Frame {
+    title: String,
+    left: i64,
+    right: i64,
+}
+
+/// Columns `lo..=hi` covered so far, if anything.
+type Extent = Option<(i64, i64)>;
+
+/// Frames in order of their `Start`, fitted around their contents.
+fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
+    let mut out: Vec<Frame> = Vec::new();
+    // Open frames: index, content extent so far, widest title or divider.
+    let mut stack: Vec<(usize, Extent, i64)> = Vec::new();
+    let grow = |e: &mut Extent, (lo, hi): (i64, i64)| *e = Some(e.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
     for item in items {
         match item {
             Item::Start { kind, text } => {
-                out.push((block_title(kind, text), 0, 0));
+                out.push(Frame { title: block_title(kind, text), left: 0, right: 0 });
                 stack.push((out.len() - 1, None, width(&block_title(kind, text))));
             }
             Item::Divider { kind, text } => {
@@ -253,7 +267,7 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<(String, i64, i64)> {
                 let (f, extent, title) = stack.pop().expect("parser balances blocks");
                 let (lo, hi) = extent.unwrap_or((x[0], x[0]));
                 let (left, right) = (lo - 2, (hi + 2).max(lo - 2 + title + 3));
-                (out[f].1, out[f].2) = (left, right);
+                (out[f].left, out[f].right) = (left, right);
                 if let Some(parent) = stack.last_mut() {
                     grow(&mut parent.1, (left, right));
                 }
@@ -322,18 +336,24 @@ fn columns(seq: &Sequence) -> Vec<i64> {
     // Push lifelines apart until no frame border sits on (or next to) one.
     for _ in 0..200 {
         let x = place(&gap);
-        let touching = |&(_, left, right): &(String, i64, i64)| -> Vec<usize> {
+        let touching = |&Frame { left, right, .. }: &Frame| -> Vec<usize> {
             let near = |a: i64, b: i64| (a - b).abs() <= 1;
             (0..n)
-                .filter_map(|m| match () {
-                    _ if near(left, x[m]) && m + 1 < n => Some(m),
-                    _ if near(right, x[m]) && m > 0 => Some(m - 1),
-                    _ => None,
+                .filter_map(|m| {
+                    if near(left, x[m]) && m + 1 < n {
+                        Some(m)
+                    } else if near(right, x[m]) && m > 0 {
+                        Some(m - 1)
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         };
         let Some(bumps) = frames(&seq.items, &x).iter().map(touching).find(|b| !b.is_empty()) else { break };
-        bumps.into_iter().for_each(|m| gap[m] += 1);
+        for m in bumps {
+            gap[m] += 1;
+        }
     }
     place(&gap)
 }
@@ -351,6 +371,7 @@ fn boxed(p: &mut Painter, (left, top): (i64, i64), w: i64, lines: &[String], rou
 }
 
 /// Render a sequence diagram as text.
+#[must_use]
 pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
     if seq.participants.is_empty() {
         return String::new();
@@ -388,14 +409,14 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
             }
             Item::Divider { kind, text } => {
                 if let Some(&(f, _, net)) = stack.last() {
-                    let (_, l, r) = frame_list[f];
+                    let (l, r) = (frame_list[f].left, frame_list[f].right);
                     dotted(&mut p, net, &[(l, row), (r, row)]);
                     p.text(l + 1, row, &format!(" {} ", block_title(kind, text)));
                 }
             }
             Item::End => {
                 let (f, top, net) = stack.pop().expect("parser balances blocks");
-                let (title, l, r) = &frame_list[f];
+                let Frame { title, left: l, right: r } = &frame_list[f];
                 dotted(&mut p, net, &[(*l, top), (*r, top), (*r, row), (*l, row), (*l, top)]);
                 p.text(l + 1, top, &format!(" {title} "));
             }
@@ -445,6 +466,7 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
 }
 
 /// Copy of `seq` with participant, message and note text wrapped at `max`.
+#[must_use]
 pub fn wrap_sequence(seq: &Sequence, max: usize) -> Sequence {
     let mut s = seq.clone();
     let wrap_all = |lines: &mut Vec<String>| *lines = lines.iter().flat_map(|l| wrap(l, max, false)).collect();
@@ -460,6 +482,7 @@ pub fn wrap_sequence(seq: &Sequence, max: usize) -> Sequence {
 
 /// Render within `max_width` columns (0 = unlimited), wrapping text at 24,
 /// then 16, then 12 columns if needed.
+#[must_use]
 pub fn render_sequence_fit(seq: &Sequence, ascii: bool, max_width: usize) -> Fit {
     let wrapped = [None, Some(24), Some(16), Some(12)].into_iter();
     first_fit(

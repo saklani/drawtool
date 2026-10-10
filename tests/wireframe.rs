@@ -117,7 +117,7 @@ fn screens_sit_side_by_side_and_wrap_to_the_budget() {
 
 #[test]
 fn errors_name_the_line() {
-    assert!(parse_wireframe("wireframe\n  text: a\n    text: b").unwrap_err().starts_with("line 3:"));
-    assert!(parse_wireframe("text: a").unwrap_err().starts_with("line 1:"));
-    assert!(parse_wireframe("wireframe x width=abc").unwrap_err().contains("invalid width"));
+    assert_eq!(parse_wireframe("wireframe\n  text: a\n    text: b").unwrap_err().line, Some(3));
+    assert_eq!(parse_wireframe("text: a").unwrap_err().line, Some(1));
+    assert!(parse_wireframe("wireframe x width=abc").unwrap_err().message.contains("invalid width"));
 }

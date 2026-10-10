@@ -26,6 +26,7 @@ pub fn text_width(text: &str) -> usize {
 }
 
 /// Copy of `graph` with every node and edge label wrapped at `max` columns.
+#[must_use]
 pub fn wrap_labels(graph: &Graph, max: usize) -> Graph {
     let mut g = graph.clone();
     let wrap_all = |lines: &mut Vec<String>| *lines = lines.iter().flat_map(|l| wrap(l, max, false)).collect();
@@ -40,6 +41,7 @@ fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
 
 /// Render within `max_width` columns (0 = unlimited), keeping `direction`.
 /// If nothing fits, returns the narrowest single-band attempt.
+#[must_use]
 pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fitted {
     let f = first_fit(max_width, WRAPS.iter().map(|&w| render(&wrapped(graph, w), Some(direction), ascii)));
     let first = Fitted { text: f.text, direction, width: f.width, fits: f.fits, bands: 1 };
@@ -89,7 +91,9 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
         index.insert(i, nodes.len());
         nodes.push(n.clone());
     }
-    edges.iter_mut().for_each(|e| e.dst = index[&e.dst]);
+    for e in &mut edges {
+        e.dst = index[&e.dst];
+    }
     for e in graph.edges.iter().filter(|e| band_of[e.src] == b) {
         let dst = if band_of[e.dst] == b { index[&e.dst] } else { connector(&mut nodes, number[&e.dst]) };
         edges.push(EdgeDef { src: index[&e.src], dst, ..e.clone() });
@@ -127,7 +131,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
     let width = parts.iter().map(|p| text_width(p)).max().unwrap_or(0);
     let bands = parts.len();
     Some(Fitted {
-        text: join_bands(graph, &band_of(&cuts), parts, ascii),
+        text: join_bands(graph, &band_of(&cuts), &parts, ascii),
         direction: Direction::LR,
         width,
         fits: true,
@@ -137,7 +141,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
 
 /// Stack rendered bands, joining each break by a wrap-around line when
 /// exactly one edge crosses it and by a blank line (keeping connectors) else.
-fn join_bands(graph: &Graph, band_of: &[usize], parts: Vec<String>, ascii: bool) -> String {
+fn join_bands(graph: &Graph, band_of: &[usize], parts: &[String], ascii: bool) -> String {
     let numbers = connector_numbers(graph, band_of);
     let nb = parts.len();
     let (mut outs, mut ins) = (vec![HashSet::new(); nb], vec![HashSet::new(); nb]);

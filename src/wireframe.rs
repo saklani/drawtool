@@ -13,6 +13,7 @@
 
 use crate::paint::{char_width, width, wrap, Painter, Weight};
 use crate::parse::Style;
+use crate::Error;
 
 /// Screen width when the header doesn't give one (`width=N`).
 pub const DEFAULT_WIDTH: usize = 40;
@@ -103,7 +104,12 @@ struct Line<'a> {
 }
 
 /// Parse one or more `wireframe` screens.
-pub fn parse_wireframe(text: &str) -> Result<Wireframe, String> {
+///
+/// # Errors
+///
+/// Input that doesn't start with `wireframe`, a bad `width=`, or indentation
+/// under an element that can't have children.
+pub fn parse_wireframe(text: &str) -> Result<Wireframe, Error> {
     let lines: Vec<Line> = text
         .lines()
         .enumerate()
@@ -117,12 +123,14 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, String> {
     let mut i = 0;
     while let Some(line) = lines.get(i) {
         if !is_screen_header(line.text) {
-            return Err(format!("line {}: expected `wireframe [title]`", line.no));
+            return Err(Error::at(line.no, "expected `wireframe [title]`"));
         }
         let (mut title, mut width) = (Vec::new(), DEFAULT_WIDTH);
         for word in line.text.split_whitespace().skip(1) {
             match word.strip_prefix("width=") {
-                Some(n) => width = n.parse::<usize>().map_err(|_| format!("line {}: invalid width {n:?}", line.no))?,
+                Some(n) => {
+                    width = n.parse::<usize>().map_err(|_| Error::at(line.no, format!("invalid width {n:?}")))?
+                }
                 None => title.push(word),
             }
         }
@@ -132,17 +140,17 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, String> {
         screens.push(Screen { title: unquote(&title.join(" ")), width: width.max(MIN_WIDTH), children });
     }
     if screens.is_empty() {
-        return Err("expected `wireframe [title]`".to_string());
+        return Err(Error::new("expected `wireframe [title]`"));
     }
     Ok(Wireframe { screens })
 }
 
 /// Elements at exactly `indent`, each with its deeper-indented children.
-fn parse_block(lines: &[Line], i: &mut usize, indent: usize) -> Result<Vec<El>, String> {
+fn parse_block(lines: &[Line], i: &mut usize, indent: usize) -> Result<Vec<El>, Error> {
     let mut out = Vec::new();
     while let Some(line) = lines.get(*i).filter(|l| !is_screen_header(l.text) && l.indent >= indent) {
         if line.indent > indent {
-            return Err(format!("line {}: unexpected indentation (only card, row and col take children)", line.no));
+            return Err(Error::at(line.no, "unexpected indentation (only card, row and col take children)"));
         }
         *i += 1;
         let deeper = lines.get(*i).filter(|l| l.indent > indent && !is_screen_header(l.text)).map(|l| l.indent);
@@ -429,6 +437,7 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
 }
 
 /// Render every screen at its own width.
+#[must_use]
 pub fn render_wireframe(wf: &Wireframe, ascii: bool) -> String {
     render_wireframe_fit(wf, ascii, 0).text
 }

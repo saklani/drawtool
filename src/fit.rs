@@ -1,6 +1,6 @@
-//! Fit a diagram into a column budget. For LR, in order of preference:
-//! wrap long labels, then break the diagram into stacked bands joined by
-//! numbered connectors (①), and only then fall back to TD.
+//! Fit a diagram into a column budget without changing its direction. LR
+//! first wraps long labels, then breaks into stacked bands joined by
+//! numbered connectors (①). TD only ever wraps labels.
 
 use crate::layout::{node_layers, render};
 use crate::parse::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
@@ -60,9 +60,8 @@ pub fn wrap_labels(graph: &Graph, max: usize) -> Graph {
     g
 }
 
-/// Render within `max_width` columns (0 = unlimited). LR tries label
-/// wrapping, then stacked bands, then TD. If nothing fits, returns the
-/// narrowest attempt.
+/// Render within `max_width` columns (0 = unlimited), keeping `direction`.
+/// If nothing fits, returns the narrowest single-band attempt.
 pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fitted {
     let first = fit_labels(graph, direction, ascii, max_width);
     if first.fits || direction == Direction::TD {
@@ -77,12 +76,7 @@ pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: u
             return banded;
         }
     }
-    let td = fit_labels(graph, Direction::TD, ascii, max_width);
-    if td.fits || td.width < first.width {
-        td
-    } else {
-        first
-    }
+    first
 }
 
 /// One direction, progressively tighter label wrapping.

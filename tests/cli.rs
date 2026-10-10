@@ -46,12 +46,19 @@ fn long_lr_chain_breaks_into_bands_before_td() {
 }
 
 #[test]
-fn lr_falls_back_to_td_when_no_band_fits() {
-    // Each box is 12 wide: alone it fits, but not with a connector beside it.
+fn lr_never_switches_to_td_on_its_own() {
+    // Each box is 12 wide: no LR layout fits in 12 columns, but TD would.
     let src = "flowchart LR\na[abcdefgh] --> b[ijklmnop] --> c[qrstuvwx]";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 12);
-    assert_eq!(fitted.direction, drawtool::Direction::TD, "\n{}", fitted.text);
-    assert!(fitted.fits);
+    assert_eq!(fitted.direction, drawtool::Direction::LR, "\n{}", fitted.text);
+    assert!(!fitted.fits);
+}
+
+#[test]
+fn td_is_kept_when_asked_for() {
+    let src = "flowchart TD\na --> b --> c";
+    let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::TD, false, 120);
+    assert_eq!(fitted.direction, drawtool::Direction::TD);
 }
 
 #[test]

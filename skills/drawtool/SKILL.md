@@ -36,8 +36,8 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 Define a node's label once (`p(parse_body)`), then refer to it by id (`p`). Cycles and self-loops work.
 Flags: `--ascii` for plain ASCII, `-d TD` to override direction, `-w N` column budget
 (default 120). A too-wide LR diagram gets its labels wrapped, then is broken into stacked bands
-joined by numbered connectors (①); only as a last resort is it drawn TD, with a `note:` on
-stderr. Never paste that note into the reply.
+joined by numbered connectors (①). drawtool never switches to TD by itself; if it still can't
+fit, it prints a `note:` on stderr. Never paste that note into the reply.
 If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --path /Users/shauryasaklani/Development/drawtool`.
 
@@ -50,8 +50,8 @@ If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
 - Always use `flowchart LR`: it reads like a sentence and needs no scrolling.
 - If a flow is too long for one line, break it yourself at a meaningful seam (request path,
   then processing, then storage) into several short LR diagrams, each with its own heading.
-- If there is no clean seam, let drawtool wrap it into bands. Accept TD only when drawtool
-  falls back to it, and then try splitting the diagram first.
+- If there is no clean seam, let drawtool wrap it into bands.
+- TD is a mode, not a fallback: use `flowchart TD` only when the user asks for top-down.
 - Keep labels short (< 25 chars); drawtool wraps them only when it has to.
 - Use `{decision}` for branches, with edge labels on each branch (`yes`/`no`, `cache hit`/`miss`).
 - If drawtool reports a parse error, fix the line it names and rerun.

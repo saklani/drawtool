@@ -14,8 +14,9 @@ Options:
   -a, --ascii            plain ASCII output
   -d, --direction <DIR>  override layout direction: TD or LR
   -w, --max-width <N>    column budget (default: $COLUMNS, else 120; 0 = unlimited).
-                         Too-wide diagrams get their labels wrapped first; an LR
-                         diagram that still doesn't fit is drawn TD instead.
+                         Too-wide diagrams get their labels wrapped; LR ones are
+                         then broken into bands joined by numbered connectors.
+                         The direction never changes on its own.
   -h, --help             print help
   -V, --version          print version
 
@@ -102,9 +103,6 @@ fn main() -> ExitCode {
         Ok(graph) => {
             let wanted = direction.unwrap_or(graph.direction);
             let fitted = render_fit(&graph, wanted, ascii, max_width);
-            if fitted.direction != wanted {
-                eprintln!("drawtool: note: too wide for LR in {max_width} columns, drew TD instead");
-            }
             if !fitted.fits {
                 eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
             }

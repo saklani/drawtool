@@ -38,12 +38,11 @@ drawtool -w 100 diagram.mmd   # column budget (default $COLUMNS or 120, 0 = unli
 
 ## Long diagrams
 
-Diagrams are fitted to the column budget. A left-to-right diagram that is too wide is,
-in order of preference:
-
-1. drawn with long labels word-wrapped,
-2. broken into stacked bands joined by numbered connectors (①, ②, ...),
-3. drawn top-down, as a last resort (drawtool prints a `note:` on stderr).
+Diagrams are fitted to the column budget without changing direction. A left-to-right
+diagram that is too wide is first drawn with long labels word-wrapped, then broken into
+stacked bands joined by numbered connectors (①, ②, ...). If it still can't fit, drawtool
+prints a `note:` on stderr. Top-down is a mode you choose (`flowchart TD` or `-d TD`),
+never a fallback.
 
 ```
 ┌──────────────┐  ╭───────╮                ╭──────────────╮  ╭───────────────╮  ╭────────────────────╮  ╭───╮

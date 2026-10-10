@@ -1,20 +1,32 @@
 //! Flowchart layout: a simplified Sugiyama pipeline, one method per stage.
 //!
 //! break cycles → layer → dummy nodes → lanes → crossing reduction → sizes →
-//! placement (isotonic regression) → ports → channel tracks → paint.
+//! placement (isotonic regression) → ports → back-edge lanes → channel tracks
+//! → paint.
 //!
 //! Coordinates are abstract: `l` runs along the flow (layers) and `c` across
 //! it; `phys` maps them to x/y, so TD and LR share every line of layout.
+//!
+//! Back edges (edges that close a cycle) don't run backwards through the
+//! layers. Layering treats them as reversed, so they still shape the layers,
+//! but they get no dummies and take no part in ordering. Afterwards each one
+//! leaves its source like any edge, turns into an outer lane beyond every node
+//! (on whichever side is nearer its ends), runs back along the lane, and
+//! enters its target from the channel before it with an ordinary arrowhead.
+//! Everything about them is in the "Back edges" section below.
 
 use crate::model::{Direction, Graph, Mark, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
 use crate::text::width;
-use std::collections::{HashMap, HashSet, VecDeque};
+use petgraph::algo::toposort;
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::Direction::{Incoming, Outgoing};
+use std::collections::{HashMap, HashSet};
 
 /// Gap plus dashed line between a group's members and its frame.
 const FRAME: i64 = 2;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     Real,
     Label,
@@ -71,7 +83,7 @@ struct Edge {
     path: Vec<usize>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Side {
     In,
     Out,
@@ -79,7 +91,7 @@ enum Side {
 
 /// (node, side, style): edges of one style share a port on a box side; a
 /// second style gets its own port beside it, so dotted and solid stay apart.
-/// Node indices past the real nodes stand for a back edge's outer lane.
+/// Node indices from `nodes.len()` on stand for a back edge's outer lane.
 type PortKey = (usize, Side, Style);
 
 /// One edge segment between adjacent layers, `cs` → `ct` across the channel.
@@ -88,7 +100,7 @@ struct Seg {
     v: usize,
     /// The channel (between layer `chan` and `chan + 1`) it crosses.
     chan: usize,
-    /// For the two halves of a back edge: the edge's index.
+    /// For the two halves of a back edge: its index in `Layout::backs`.
     back: Option<usize>,
     style: Style,
     arrow_end: bool,
@@ -103,6 +115,19 @@ impl Seg {
     fn span(&self) -> (i64, i64) {
         (self.cs.min(self.ct), self.cs.max(self.ct))
     }
+
+    fn bent(&self) -> bool {
+        self.cs != self.ct
+    }
+}
+
+/// A back edge's route: the half out of its source, the half into its
+/// target, and the cross-axis position of the outer lane between them.
+struct BackEdge {
+    edge: usize,
+    out_seg: usize,
+    in_seg: usize,
+    lane: i64,
 }
 
 /// Weighted isotonic (non-decreasing) regression.
@@ -120,6 +145,8 @@ fn pava(ys: &[f64], ws: &[f64]) -> Vec<f64> {
 }
 
 /// Mark edges that close a cycle (found by depth-first search) as reversed.
+/// Our own DFS rather than petgraph's: it visits out-edges in source order,
+/// which decides which edge of a cycle counts as the back edge.
 fn break_cycles(n: usize, edges: &mut [Edge]) {
     let mut out = vec![Vec::new(); n];
     let mut indeg = vec![0; n];
@@ -154,18 +181,33 @@ fn break_cycles(n: usize, edges: &mut [Edge]) {
     }
 }
 
+/// Edge crossings between consecutive layers, counted as inversions with a
+/// Fenwick tree: with edges sorted by their upper end (ties by lower end),
+/// each earlier edge whose lower end lies further right crosses.
 fn crossings(layers: &[Vec<usize>], nodes: &[Node]) -> usize {
     let mut total = 0;
     for pair in layers.windows(2) {
-        let rank: HashMap<usize, i64> = pair[1].iter().enumerate().map(|(i, &v)| (v, i as i64)).collect();
-        let es: Vec<(i64, i64)> = pair[0]
+        let rank: HashMap<usize, usize> = pair[1].iter().enumerate().map(|(i, &v)| (v, i)).collect();
+        let mut es: Vec<(usize, usize)> = pair[0]
             .iter()
             .enumerate()
-            .flat_map(|(i, &u)| nodes[u].down.iter().map(move |v| (i as i64, v)))
+            .flat_map(|(i, &u)| nodes[u].down.iter().map(move |v| (i, v)))
             .map(|(i, v)| (i, rank[v]))
             .collect();
-        for (a, ea) in es.iter().enumerate() {
-            total += es[a + 1..].iter().filter(|eb| (ea.0 - eb.0) * (ea.1 - eb.1) < 0).count();
+        es.sort_unstable();
+        let mut tree = vec![0usize; pair[1].len() + 1];
+        for (seen, &(_, b)) in es.iter().enumerate() {
+            let (mut at_most, mut i) = (0, b + 1);
+            while i > 0 {
+                at_most += tree[i];
+                i &= i - 1;
+            }
+            total += seen - at_most;
+            let mut i = b + 1;
+            while i < tree.len() {
+                tree[i] += 1;
+                i += i & i.wrapping_neg();
+            }
         }
     }
     total
@@ -203,40 +245,32 @@ fn layer_graph(graph: &Graph) -> (Vec<Node>, Vec<Edge>, Vec<Vec<usize>>) {
         .collect();
     break_cycles(nodes.len(), &mut edges);
 
-    let (mut succ, mut pred) = (vec![vec![]; nodes.len()], vec![vec![]; nodes.len()]);
+    // The layering graph: back edges reversed, each label a node of its own
+    // between its edge's ends. Node indices match `nodes`.
+    let mut g: DiGraph<(), ()> = DiGraph::with_capacity(nodes.len(), edges.len());
+    for _ in &nodes {
+        g.add_node(());
+    }
     let mut chains = Vec::new();
     for e in &edges {
         let mut chain = if e.rev { vec![e.dst, e.src] } else { vec![e.src, e.dst] };
         if let Some(label) = e.label.as_ref().filter(|_| !e.rev) {
             nodes.push(Node::new(label.clone(), Kind::Label));
-            succ.push(vec![]);
-            pred.push(vec![]);
-            chain.insert(1, nodes.len() - 1);
+            chain.insert(1, g.add_node(()).index());
         }
         for w in chain.windows(2) {
-            succ[w[0]].push(w[1]);
-            pred[w[1]].push(w[0]);
+            g.add_edge(NodeIndex::new(w[0]), NodeIndex::new(w[1]), ());
         }
         chains.push(chain);
     }
-    let mut indeg: Vec<usize> = pred.iter().map(Vec::len).collect();
-    let mut queue: VecDeque<usize> = (0..nodes.len()).filter(|&v| indeg[v] == 0).collect();
-    let mut topo = Vec::new();
-    while let Some(v) = queue.pop_front() {
-        topo.push(v);
-        for &s in &succ[v] {
-            indeg[s] -= 1;
-            if indeg[s] == 0 {
-                queue.push_back(s);
-            }
-        }
-    }
+    let topo = toposort(&g, None).expect("back edges are reversed, so the layering graph is acyclic");
+    let near = |v: NodeIndex, way| g.neighbors_directed(v, way).map(NodeIndex::index);
     for &v in &topo {
-        nodes[v].layer = pred[v].iter().map(|&p| nodes[p].layer + 1).max().unwrap_or(0);
+        nodes[v.index()].layer = near(v, Incoming).map(|p| nodes[p].layer + 1).max().unwrap_or(0);
     }
     for &v in topo.iter().rev() {
-        if pred[v].is_empty() && !succ[v].is_empty() {
-            nodes[v].layer = succ[v].iter().map(|&s| nodes[s].layer).min().unwrap() - 1;
+        if near(v, Incoming).next().is_none() && near(v, Outgoing).next().is_some() {
+            nodes[v.index()].layer = near(v, Outgoing).map(|s| nodes[s].layer).min().unwrap() - 1;
         }
     }
     (nodes, edges, chains)
@@ -258,15 +292,21 @@ struct Layout {
     gap: i64,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    /// Each edge's layering chain (source, label node, target).
+    chains: Vec<Vec<usize>>,
+    /// Whether a back edge leaves the last layer, which then needs an empty
+    /// layer (and so a channel) after it.
+    trailing_layer: bool,
     layers: Vec<Vec<usize>>,
-    /// Lanes in cross-axis order, and each lane's span of layers.
+    /// Lanes in cross-axis order, each lane's span of layers, and each
+    /// node's lane rank (its lane's position in `lanes`).
     lanes: Vec<usize>,
     span: HashMap<usize, (usize, usize)>,
+    rank: Vec<usize>,
     segs: Vec<Seg>,
     groups: HashMap<(usize, Side), Vec<Style>>,
     port: HashMap<PortKey, i64>,
-    /// Cross-axis position of each back edge's outer lane.
-    back_lane: HashMap<usize, i64>,
+    backs: Vec<BackEdge>,
     /// Per layer: band start, channel start, channel lead before the tracks.
     bstart: Vec<i64>,
     cstart: Vec<i64>,
@@ -279,19 +319,8 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
     if graph.nodes.is_empty() {
         return String::new();
     }
-    let td = direction.unwrap_or(graph.direction) == Direction::TD;
-    let (mut nodes, edges, chains) = layer_graph(graph);
-    // A back edge enters its target from the channel before it, so the first
-    // layer may need one in front of it.
-    if edges.iter().any(|e| e.rev && nodes[e.dst].layer == 0) {
-        for n in &mut nodes {
-            n.layer += 1;
-        }
-    }
-    let titles = graph.groups.iter().map(|g| g.title.clone()).collect();
-    let mut l =
-        Layout { real: graph.nodes.len(), titles, td, gap: if td { 3 } else { 1 }, nodes, edges, ..Default::default() };
-    l.dummies(&chains);
+    let mut l = Layout::new(graph, direction.unwrap_or(graph.direction) == Direction::TD);
+    l.dummies();
     l.order();
     l.segments();
     l.sizes();
@@ -304,19 +333,12 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
 }
 
 impl Layout {
-    fn lane_rank(&self, v: usize) -> usize {
-        self.lanes.iter().position(|&l| l == self.nodes[v].lane).unwrap_or(0)
-    }
-
-    /// A cross-axis point far out on the side a back edge's lane will use.
-    fn lane_side(&self, e: usize) -> i64 {
-        let (src, dst) = (self.nodes[self.edges[e].src].cen(), self.nodes[self.edges[e].dst].cen());
-        let (lo, hi) = self.nodes.iter().fold((i64::MAX, i64::MIN), |(a, b), n| (a.min(n.pos), b.max(n.pos + n.csize)));
-        if src + dst < lo + hi {
-            -(1 << 30)
-        } else {
-            1 << 30
-        }
+    fn new(graph: &Graph, td: bool) -> Self {
+        let (mut nodes, edges, chains) = layer_graph(graph);
+        let trailing_layer = make_room_for_back_edges(&mut nodes, &edges);
+        let titles = graph.groups.iter().map(|g| g.title.clone()).collect();
+        let gap = if td { 3 } else { 1 };
+        Layout { real: graph.nodes.len(), titles, td, gap, nodes, edges, chains, trailing_layer, ..Default::default() }
     }
 
     /// Space after `a` in its layer: wider between two TD edge labels, so
@@ -337,8 +359,9 @@ impl Layout {
     /// Dummy nodes for edges spanning several layers. Long edges of the same
     /// style into the same node share dummies, so they merge into one line as
     /// early as possible instead of each taking its own route.
-    fn dummies(&mut self, chains: &[Vec<usize>]) {
+    fn dummies(&mut self) {
         let mut shared: HashMap<(usize, usize, Style), usize> = HashMap::new();
+        let chains = std::mem::take(&mut self.chains);
         for (ei, chain) in chains.iter().enumerate() {
             let (style, src) = (self.edges[ei].style, self.edges[ei].src);
             if self.edges[ei].rev {
@@ -375,14 +398,14 @@ impl Layout {
             }
             self.edges[ei].path = path;
         }
+        self.chains = chains;
     }
 
     /// Lanes, then barycenter sweeps (keeping the ordering with fewest
     /// crossings). Every subgraph is a lane: a strip across the flow only its
     /// members occupy, so its frame can never enclose a stranger.
     fn order(&mut self) {
-        let real = self.real;
-        for v in 0..real {
+        for v in 0..self.real {
             let (lane, layer) = (self.nodes[v].lane, self.nodes[v].layer);
             let e = self.span.entry(lane).or_insert((layer, layer));
             *e = (e.0.min(layer), e.1.max(layer));
@@ -391,15 +414,15 @@ impl Layout {
             }
         }
         self.lanes.sort_by_key(|l| self.span[l].0);
-        let last = self.nodes.iter().map(|n| n.layer).max().unwrap();
-        let nl = last + 1 + usize::from(self.edges.iter().any(|e| e.rev && self.nodes[e.src].layer == last));
+        let position: HashMap<usize, usize> = self.lanes.iter().enumerate().map(|(i, &l)| (l, i)).collect();
+        self.rank = self.nodes.iter().map(|n| position.get(&n.lane).copied().unwrap_or(0)).collect();
+        let nl = self.nodes.iter().map(|n| n.layer).max().unwrap() + 1 + usize::from(self.trailing_layer);
         self.layers = vec![vec![]; nl];
         for v in 0..self.nodes.len() {
             self.layers[self.nodes[v].layer].push(v);
         }
-        let rank_of: Vec<usize> = (0..self.nodes.len()).map(|v| self.lane_rank(v)).collect();
         for lay in &mut self.layers {
-            lay.sort_by_key(|&v| rank_of[v]);
+            lay.sort_by_key(|&v| self.rank[v]);
         }
         let (mut best, mut best_c) = (self.layers.clone(), crossings(&self.layers, &self.nodes));
         let mut rank = vec![0usize; self.nodes.len()];
@@ -421,10 +444,10 @@ impl Layout {
                     }
                 };
                 let mut keyed: Vec<(f64, usize)> = self.layers[k].iter().map(|&v| (key(v), v)).collect();
-                keyed.sort_by(|a, b| rank_of[a.1].cmp(&rank_of[b.1]).then(a.0.partial_cmp(&b.0).unwrap()));
+                keyed.sort_by(|a, b| self.rank[a.1].cmp(&self.rank[b.1]).then(a.0.partial_cmp(&b.0).unwrap()));
                 self.layers[k] = keyed.into_iter().map(|(_, v)| v).collect();
             }
-            self.transpose(&rank_of);
+            self.transpose();
             let c = crossings(&self.layers, &self.nodes);
             if c < best_c {
                 (best, best_c) = (self.layers.clone(), c);
@@ -435,7 +458,7 @@ impl Layout {
 
     /// Swap neighbours in a layer (within a lane) while that lowers the
     /// crossings between their edges ("transpose", as in Graphviz dot).
-    fn transpose(&mut self, lane_rank: &[usize]) {
+    fn transpose(&mut self) {
         let mut pos = vec![0usize; self.nodes.len()];
         for lay in &self.layers {
             lay.iter().enumerate().for_each(|(i, &v)| pos[v] = i);
@@ -453,7 +476,7 @@ impl Layout {
             for lay in &mut self.layers {
                 for i in 1..lay.len() {
                     let (a, b) = (lay[i - 1], lay[i]);
-                    if lane_rank[a] == lane_rank[b] && cost(&self.nodes, &pos, b, a) < cost(&self.nodes, &pos, a, b) {
+                    if self.rank[a] == self.rank[b] && cost(&self.nodes, &pos, b, a) < cost(&self.nodes, &pos, a, b) {
                         lay.swap(i - 1, i);
                         (pos[a], pos[b]) = (i, i - 1);
                         improved = true;
@@ -466,24 +489,27 @@ impl Layout {
     /// One segment per layer gap. A back edge becomes two: out of its source
     /// into the outer lane, and from the lane into its target.
     fn segments(&mut self) {
-        let real = self.nodes.len();
+        let lanes_from = self.nodes.len();
         for (ei, e) in self.edges.iter().enumerate() {
             let mut add =
                 |segs: &mut Vec<Seg>, (u, v, chan): (usize, usize, usize), sk: PortKey, tk: PortKey, arrow_end| {
-                    for (n, side, style) in [sk, tk].into_iter().filter(|k| k.0 < real) {
+                    for (n, side, style) in [sk, tk].into_iter().filter(|k| k.0 < lanes_from) {
                         let styles = self.groups.entry((n, side)).or_default();
                         if !styles.contains(&style) {
                             styles.push(style);
                         }
                     }
-                    let back = e.rev.then_some(ei);
+                    let back = e.rev.then_some(self.backs.len());
                     segs.push(Seg { u, v, chan, back, style: e.style, arrow_end, sk, tk, cs: 0, ct: 0, track: 0 });
+                    segs.len() - 1
                 };
             let (out, inn) = (|n| (n, Side::Out, e.style), |n| (n, Side::In, e.style));
             if e.rev {
                 let (src, dst) = (self.nodes[e.src].layer, self.nodes[e.dst].layer);
-                add(&mut self.segs, (e.src, e.src, src), out(e.src), inn(real + ei), false);
-                add(&mut self.segs, (e.dst, e.dst, dst - 1), out(real + ei), inn(e.dst), e.arrow);
+                let lane = lanes_from + ei;
+                let out_seg = add(&mut self.segs, (e.src, e.src, src), out(e.src), inn(lane), false);
+                let in_seg = add(&mut self.segs, (e.dst, e.dst, dst - 1), out(lane), inn(e.dst), e.arrow);
+                self.backs.push(BackEdge { edge: ei, out_seg, in_seg, lane: 0 });
                 continue;
             }
             for (j, w) in e.path.windows(2).enumerate() {
@@ -551,12 +577,16 @@ impl Layout {
         (1..nl).for_each(|k| sweep(self, k, true));
 
         // Push each lane clear of earlier lanes it shares layers with.
-        let mut extent: Vec<Option<(i64, i64)>> = vec![None; self.lanes.len()];
-        for (v, nd) in self.nodes.iter().enumerate() {
-            let e = &mut extent[self.lane_rank(v)];
-            let (lo, hi) = (nd.pos, nd.pos + nd.csize - 1);
-            *e = Some(e.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+        let mut members: Vec<Vec<usize>> = vec![vec![]; self.lanes.len()];
+        for v in 0..self.nodes.len() {
+            members[self.rank[v]].push(v);
         }
+        let extent_of = |nodes: &[Node], vs: &[usize]| {
+            vs.iter()
+                .map(|&v| (nodes[v].pos, nodes[v].pos + nodes[v].csize - 1))
+                .reduce(|(a, b), (lo, hi)| (a.min(lo), b.max(hi)))
+        };
+        let mut extent: Vec<Option<(i64, i64)>> = members.iter().map(|vs| extent_of(&self.nodes, vs)).collect();
         let margin = |l: usize| if l > 0 { FRAME } else { 0 };
         let overlaps = |a: (usize, usize), b: (usize, usize)| a.0 <= b.1 && b.0 <= a.1;
         for r in 1..self.lanes.len() {
@@ -567,10 +597,8 @@ impl Layout {
                 .max();
             let Some((lo, hi)) = extent[r] else { continue };
             let push = need.map_or(0, |n| (n - lo).max(0));
-            for v in 0..self.nodes.len() {
-                if self.lane_rank(v) == r {
-                    self.nodes[v].pos += push;
-                }
+            for &v in &members[r] {
+                self.nodes[v].pos += push;
             }
             extent[r] = Some((lo + push, hi + push));
         }
@@ -588,11 +616,12 @@ impl Layout {
     /// Port positions: the first style at the centre, others beside it on
     /// the side facing where their edges go (back edges: the outer lane).
     fn ports(&mut self) {
-        let real = self.nodes.len();
-        // Where each port's edges go, on average (back edges: far outside).
+        let lanes_from = self.nodes.len();
+        let hints: HashMap<usize, i64> = self.backs.iter().map(|b| (lanes_from + b.edge, self.lane_hint(b))).collect();
+        // Where each port's edges go, on average.
         let mut ends: HashMap<PortKey, (i64, i64)> = HashMap::new();
         for s in &self.segs {
-            let other = |n: usize| if n < real { self.nodes[n].cen() } else { self.lane_side(n - real) };
+            let other = |n: usize| if n < lanes_from { self.nodes[n].cen() } else { hints[&n] };
             for (key, end) in [(s.sk, other(s.tk.0)), (s.tk, other(s.sk.0))] {
                 let e = ends.entry(key).or_default();
                 *e = (e.0 + end, e.1 + 1);
@@ -621,20 +650,39 @@ impl Layout {
         }
     }
 
+    // ---- Back edges ---------------------------------------------------------
+
+    /// A cross-axis point far out on the side a back edge's lane will use,
+    /// for choosing which side of a box its ports go on.
+    fn lane_hint(&self, b: &BackEdge) -> i64 {
+        let e = &self.edges[b.edge];
+        let (src, dst) = (self.nodes[e.src].cen(), self.nodes[e.dst].cen());
+        let (lo, hi) = self.nodes.iter().fold((i64::MAX, i64::MIN), |(a, b), n| (a.min(n.pos), b.max(n.pos + n.csize)));
+        if src + dst < lo + hi {
+            -(1 << 30)
+        } else {
+            1 << 30
+        }
+    }
+
     /// Outer lanes for back edges, beyond every node and frame on the side
     /// nearer the edge's ends; shorter edges run inside longer ones.
     fn back_lanes(&mut self) {
-        let real = self.nodes.len();
-        let lo = (0..real).map(|v| self.nodes[v].pos - self.framed(v)).min().unwrap_or(0) - 2;
-        let hi = (0..real).map(|v| self.nodes[v].pos + self.nodes[v].csize - 1 + self.framed(v)).max().unwrap_or(0) + 2;
+        let n = self.nodes.len();
+        let lo = (0..n).map(|v| self.nodes[v].pos - self.framed(v)).min().unwrap_or(0) - 2;
+        let hi = (0..n).map(|v| self.nodes[v].pos + self.nodes[v].csize - 1 + self.framed(v)).max().unwrap_or(0) + 2;
         let (mut near, mut far) = (lo, hi);
-        let mut backs: Vec<usize> = (0..self.edges.len()).filter(|&e| self.edges[e].rev).collect();
-        backs.sort_by_key(|&e| self.nodes[self.edges[e].src].layer - self.nodes[self.edges[e].dst].layer);
-        for e in backs {
-            let (src, dst) = (self.edges[e].src, self.edges[e].dst);
-            let low = self.nodes[src].cen() + self.nodes[dst].cen() < lo + hi;
+        let mut order: Vec<usize> = (0..self.backs.len()).collect();
+        let span = |b: &BackEdge| {
+            let e = &self.edges[b.edge];
+            self.nodes[e.src].layer - self.nodes[e.dst].layer
+        };
+        order.sort_by_key(|&b| span(&self.backs[b]));
+        for b in order {
+            let e = &self.edges[self.backs[b].edge];
+            let low = self.nodes[e.src].cen() + self.nodes[e.dst].cen() < lo + hi;
             // In TD the label sits beside the (vertical) lane, so leave room.
-            let label = self.edges[e].label.as_ref().map_or(0, |l| width(&l.join(" ")) + 1);
+            let label = e.label.as_ref().map_or(0, |l| width(&l.join(" ")) + 1);
             let step = 2 + if self.td { label } else { 0 };
             let lane = if low { near } else { far };
             if low {
@@ -642,16 +690,14 @@ impl Layout {
             } else {
                 far += step;
             }
-            self.back_lane.insert(e, if low && self.td { lane - label } else { lane });
-            for s in self.segs.iter_mut().filter(|s| s.back == Some(e)) {
-                if s.sk.0 >= real {
-                    s.cs = self.back_lane[&e];
-                } else {
-                    s.ct = self.back_lane[&e];
-                }
-            }
+            let back = &mut self.backs[b];
+            back.lane = if low && self.td { lane - label } else { lane };
+            self.segs[back.out_seg].ct = back.lane;
+            self.segs[back.in_seg].cs = back.lane;
         }
     }
+
+    // ---- Routing ------------------------------------------------------------
 
     /// Give bent segments a track (a row/column of their channel) so that
     /// unrelated horizontals never share one.
@@ -674,10 +720,12 @@ impl Layout {
             let inside = |x: i64, (lo, hi): (i64, i64)| lo < x && x < hi;
             i64::from(inside(segs[a].ct, segs[b].span())) + i64::from(inside(segs[b].cs, segs[a].span()))
         };
+        let mut by_chan: Vec<Vec<usize>> = vec![vec![]; self.layers.len()];
+        for (i, s) in segs.iter().enumerate().filter(|(_, s)| s.bent()) {
+            by_chan[s.chan].push(i);
+        }
         let mut assigned: Vec<(usize, i64)> = Vec::new();
-        for k in 0..self.layers.len() {
-            let mut bent: Vec<usize> =
-                (0..segs.len()).filter(|&i| segs[i].chan == k && segs[i].cs != segs[i].ct).collect();
+        for mut bent in by_chan {
             bent.sort_by_key(|&i| segs[i].span());
             // A segment leaving column x must turn before one arriving at column x.
             let nb = bent.len();
@@ -744,14 +792,16 @@ impl Layout {
     fn coordinates(&mut self) {
         let frames = self.frames();
         let nl = self.layers.len();
+        let mut ntracks = vec![0i64; nl];
+        for s in self.segs.iter().filter(|s| s.bent()) {
+            ntracks[s.chan] = ntracks[s.chan].max(s.track + 1);
+        }
         let mut cur = if frames.iter().any(|f| f.1 == 0) { FRAME } else { 0 };
         (self.bstart, self.cstart, self.lead) = (vec![0; nl], vec![0; nl], vec![0; nl]);
-        for k in 0..nl {
+        for (k, ntracks) in ntracks.into_iter().enumerate() {
             self.bstart[k] = cur;
             cur += self.band_len(k);
             if k + 1 < nl {
-                let bent = self.segs.iter().filter(|s| s.chan == k && s.cs != s.ct);
-                let ntracks = bent.map(|s| s.track + 1).max().unwrap_or(0);
                 self.lead[k] = i64::from(!self.td) + if frames.iter().any(|f| f.2 == k) { FRAME } else { 0 };
                 let before_tail = if frames.iter().any(|f| f.1 == k + 1) { FRAME } else { 0 };
                 self.cstart[k] = cur;
@@ -839,28 +889,33 @@ impl Layout {
         // different ports that pass through each other are drawn as crossings.
         let mut nets: HashMap<PortKey, usize> = HashMap::new();
         let mut net = |p: &mut Painter, key: PortKey| *nets.entry(key).or_insert_with(|| p.net());
-        let (arrow, real) = (if self.td { '▼' } else { '►' }, self.nodes.len());
+        let (arrow, lanes_from) = (if self.td { '▼' } else { '►' }, self.nodes.len());
         let track = |s: &Seg| self.cstart[s.chan] + self.lead[s.chan] + s.track;
+        let mut on_track: HashMap<(usize, i64), Vec<usize>> = HashMap::new();
+        for (i, s) in self.segs.iter().enumerate().filter(|(_, s)| s.bent()) {
+            on_track.entry((s.chan, s.track)).or_default().push(i);
+        }
         for (i, s) in self.segs.iter().enumerate() {
             let t = track(s);
             let (start, end) = ((out_l(s.u), s.cs), (in_l(s.v) - i64::from(s.arrow_end), s.ct));
-            let pieces = if let Some(e) = s.back {
+            let pieces = if let Some(b) = s.back {
                 // A back edge: out of its source to the outer lane, back along
                 // the lane, and in to its target like any other edge.
-                let (lane, lane_key) = (self.back_lane[&e], (real + e, Side::In, s.style));
-                if s.sk.0 < real {
-                    let turn = self.segs.iter().find(|o| o.back == Some(e) && o.sk.0 >= real).map_or(t, track);
-                    vec![(s.sk, vec![start, (t, s.cs)]), (lane_key, vec![(t, s.cs), (t, lane), (turn, lane)])]
+                let back = &self.backs[b];
+                let lane_key = (lanes_from + back.edge, Side::In, s.style);
+                if i == back.out_seg {
+                    let turn = track(&self.segs[back.in_seg]);
+                    vec![(s.sk, vec![start, (t, s.cs)]), (lane_key, vec![(t, s.cs), (t, back.lane), (turn, back.lane)])]
                 } else {
-                    vec![(lane_key, vec![(t, lane), (t, s.ct)]), (s.tk, vec![(t, s.ct), end])]
+                    vec![(lane_key, vec![(t, back.lane), (t, s.ct)]), (s.tk, vec![(t, s.ct), end])]
                 }
-            } else if s.cs == s.ct {
+            } else if !s.bent() {
                 vec![(s.sk, vec![start, end])]
             } else {
                 // A track shared with a segment from another port is a fan-in.
-                let fan_in = self.segs.iter().enumerate().any(|(j, o)| {
-                    let overlap = s.span().0 <= o.span().1 && o.span().0 <= s.span().1;
-                    j != i && o.chan == s.chan && o.track == s.track && o.cs != o.ct && o.sk != s.sk && overlap
+                let fan_in = on_track[&(s.chan, s.track)].iter().any(|&j| {
+                    let o = &self.segs[j];
+                    j != i && o.sk != s.sk && s.span().0 <= o.span().1 && o.span().0 <= s.span().1
                 });
                 let track_key = if fan_in { s.tk } else { s.sk };
                 vec![
@@ -880,12 +935,12 @@ impl Layout {
             }
         }
         // Back-edge labels: on the lane in LR, beside it in TD.
-        for (&e, &lane) in &self.back_lane {
-            let Some(label) = &self.edges[e].label else { continue };
+        for back in &self.backs {
+            let Some(label) = &self.edges[back.edge].label else { continue };
             let text = label.join(" ");
-            let ts: Vec<i64> = self.segs.iter().filter(|s| s.back == Some(e)).map(track).collect();
-            let mid = (ts.iter().min().unwrap_or(&0) + ts.iter().max().unwrap_or(&0)) / 2;
-            let (x, y) = if self.td { (lane + 2, mid) } else { (mid - width(&text) / 2, lane) };
+            let (a, b) = (track(&self.segs[back.out_seg]), track(&self.segs[back.in_seg]));
+            let mid = (a.min(b) + a.max(b)) / 2;
+            let (x, y) = if self.td { (back.lane + 2, mid) } else { (mid - width(&text) / 2, back.lane) };
             p.text(x, y, &text);
         }
 
@@ -906,5 +961,154 @@ impl Layout {
             }
         }
         p.finish()
+    }
+}
+
+/// Back edges enter their target from the channel before it and leave their
+/// source into the channel after it. Shift every layer down when one targets
+/// the first layer; returns whether one leaves the last (which then needs an
+/// empty layer after it).
+fn make_room_for_back_edges(nodes: &mut [Node], edges: &[Edge]) -> bool {
+    if edges.iter().any(|e| e.rev && nodes[e.dst].layer == 0) {
+        for n in nodes.iter_mut() {
+            n.layer += 1;
+        }
+    }
+    let last = nodes.iter().map(|n| n.layer).max().unwrap_or(0);
+    edges.iter().any(|e| e.rev && nodes[e.src].layer == last)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::parse;
+
+    fn graph(src: &str) -> Graph {
+        parse(&format!("flowchart TD\n{src}")).unwrap()
+    }
+
+    /// The index of the node with this id.
+    fn id(g: &Graph, name: &str) -> usize {
+        g.nodes.iter().position(|n| n.id == name).unwrap()
+    }
+
+    fn node(pos: i64, csize: i64, layer: usize) -> Node {
+        Node { pos, csize, layer, lsize: 3, ..Node::new(vec!["x".into()], Kind::Real) }
+    }
+
+    fn edge(src: usize, dst: usize, style: Style, rev: bool) -> Edge {
+        Edge { src, dst, label: None, style, arrow: true, rev, path: vec![] }
+    }
+
+    fn seg(sk: PortKey, tk: PortKey, cs: i64, ct: i64) -> Seg {
+        let style = sk.2;
+        Seg { u: sk.0, v: tk.0, chan: 0, back: None, style, arrow_end: false, sk, tk, cs, ct, track: 0 }
+    }
+
+    #[test]
+    fn break_cycles_marks_only_the_closing_edge() {
+        let g = graph("a --> b\nb --> c\nc --> a\na --> d\nd --> c");
+        let (_, edges, _) = layer_graph(&g);
+        let rev: Vec<(usize, usize)> = edges.iter().filter(|e| e.rev).map(|e| (e.src, e.dst)).collect();
+        assert_eq!(rev, [(id(&g, "c"), id(&g, "a"))]);
+    }
+
+    #[test]
+    fn layers_of_a_chain_and_a_diamond() {
+        let g = graph("a --> b\nb --> c");
+        assert_eq!(node_layers(&g), [0, 1, 2]);
+        let g = graph("a --> b\na --> c\nb --> d\nc --> d");
+        let layers = node_layers(&g);
+        assert_eq!([layers[id(&g, "a")], layers[id(&g, "b")], layers[id(&g, "c")], layers[id(&g, "d")]], [0, 1, 1, 2]);
+        // A source is pulled down next to its child; a label takes a layer.
+        let g = graph("a --> b\nb --> c\nx --> c\nc -->|yes| d");
+        let layers = node_layers(&g);
+        assert_eq!([layers[id(&g, "x")], layers[id(&g, "d")]], [1, 4]);
+    }
+
+    #[test]
+    fn long_edges_into_one_node_share_dummies_by_style() {
+        let g = graph("a --> b\nb --> c\nc --> d\na --> d\nz --> b\nz --> d\nz -.-> d");
+        let mut l = Layout::new(&g, true);
+        l.dummies();
+        let inner = |e: &Edge| e.path[1..e.path.len() - 1].to_vec();
+        let (a_d, z_d, z_dotted) = (&l.edges[3], &l.edges[5], &l.edges[6]);
+        assert_eq!(inner(a_d).len(), 2);
+        assert_eq!(inner(a_d), inner(z_d));
+        assert!(inner(z_dotted).iter().all(|d| !inner(a_d).contains(d)));
+        assert_eq!(l.nodes.iter().filter(|n| n.kind == Kind::Dummy).count(), 4);
+    }
+
+    #[test]
+    fn transpose_removes_a_simple_crossing() {
+        let g = graph("a --> c\nb --> d");
+        let (a, b, c, d) = (id(&g, "a"), id(&g, "b"), id(&g, "c"), id(&g, "d"));
+        let mut l = Layout::new(&g, true);
+        l.dummies();
+        l.rank = vec![0; l.nodes.len()];
+        l.layers = vec![vec![a, b], vec![d, c]];
+        assert_eq!(crossings(&l.layers, &l.nodes), 1);
+        l.transpose();
+        assert_eq!(crossings(&l.layers, &l.nodes), 0);
+    }
+
+    #[test]
+    fn crossings_count_every_pair_once() {
+        // Each of a's two edges crosses each of b's: four crossings.
+        let g = graph("a --> d\na --> e\nb --> c\nb --> f");
+        let mut l = Layout::new(&g, true);
+        l.dummies();
+        let n = |s| id(&g, s);
+        l.layers = vec![vec![n("a"), n("b")], vec![n("c"), n("f"), n("d"), n("e")]];
+        assert_eq!(crossings(&l.layers, &l.nodes), 4);
+    }
+
+    #[test]
+    fn pava_pools_adjacent_violators() {
+        assert_eq!(pava(&[1.0, 2.0, 3.0], &[1.0; 3]), [1.0, 2.0, 3.0]);
+        assert_eq!(pava(&[1.0, 3.0, 2.0, 4.0], &[1.0; 4]), [1.0, 2.5, 2.5, 4.0]);
+        // Weighted, and a later block pulling an earlier pool down with it.
+        assert_eq!(pava(&[3.0, 2.0, 0.0], &[1.0, 1.0, 2.0]), [1.25; 3]);
+        assert_eq!(pava(&[4.0, 1.0], &[3.0, 1.0]), [3.25; 2]);
+    }
+
+    #[test]
+    fn tracks_put_the_crossing_free_order_first() {
+        // By span, `a` (0..10) comes first, but if it took the upper track its
+        // way down (at 10) would cross b's track and b's way up (at 5) a's.
+        let mut l = Layout { layers: vec![vec![], vec![]], ..Default::default() };
+        let key = |n, side| (n, side, Style::Solid);
+        l.segs.push(seg(key(0, Side::Out), key(1, Side::In), 0, 10));
+        l.segs.push(seg(key(2, Side::Out), key(3, Side::In), 5, 20));
+        l.tracks();
+        assert_eq!((l.segs[0].track, l.segs[1].track), (1, 0));
+    }
+
+    #[test]
+    fn ports_put_the_straightest_style_at_the_centre() {
+        // `a` (centre 5) has a dotted edge to far-off `c`, listed first, and a
+        // solid one to `b` straight below.
+        let mut l = Layout { nodes: vec![node(0, 11, 0), node(0, 11, 1), node(40, 11, 1)], ..Default::default() };
+        l.groups.insert((0, Side::Out), vec![Style::Dotted, Style::Solid]);
+        l.segs.push(seg((0, Side::Out, Style::Dotted), (2, Side::In, Style::Dotted), 0, 0));
+        l.segs.push(seg((0, Side::Out, Style::Solid), (1, Side::In, Style::Solid), 0, 0));
+        l.ports();
+        assert_eq!(l.port[&(0, Side::Out, Style::Solid)], 5);
+        assert!(l.port[&(0, Side::Out, Style::Dotted)] > 5, "the dotted port leans toward c");
+    }
+
+    #[test]
+    fn back_lanes_take_the_nearer_side() {
+        // Two cycles, one at each end of the cross axis (0..55).
+        let nodes = vec![node(0, 5, 1), node(0, 5, 2), node(50, 5, 1), node(50, 5, 2)];
+        let edges = vec![edge(1, 0, Style::Solid, true), edge(3, 2, Style::Solid, true)];
+        let mut l = Layout { nodes, edges, ..Default::default() };
+        l.segments();
+        l.back_lanes();
+        let lanes: Vec<i64> = l.backs.iter().map(|b| b.lane).collect();
+        assert_eq!(lanes, [-2, 56]);
+        for b in &l.backs {
+            assert_eq!((l.segs[b.out_seg].ct, l.segs[b.in_seg].cs), (b.lane, b.lane));
+        }
     }
 }

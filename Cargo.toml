@@ -1,6 +1,6 @@
 [package]
 name = "drawtool"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Render Mermaid-style flowcharts as box diagrams in the terminal"
 license = "MIT"

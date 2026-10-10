@@ -115,15 +115,49 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
         let text = render(&band_graph(graph, &band_of(cuts), b, ascii), Some(Direction::LR), ascii);
         (text_width(&text) <= max_width).then_some(text)
     };
-    let mut cuts = vec![0];
-    for i in 1..distinct.len() {
-        // Extend the current band through layer i if it still fits.
-        let trial = [&cuts[..], &[i + 1]].concat();
-        let last = i + 1 == distinct.len();
-        if fits(if last { &cuts } else { &trial }, cuts.len() - 1).is_none() {
-            cuts.push(i);
+    // Height of band [i, j) of the distinct layers, if it fits on its own.
+    let n = distinct.len();
+    let mut memo: HashMap<(usize, usize), Option<usize>> = HashMap::new();
+    let mut band_height = |i: usize, j: usize| {
+        let cuts: Vec<usize> = [0].into_iter().chain((i > 0).then_some(i)).chain((j < n).then_some(j)).collect();
+        *memo.entry((i, j)).or_insert_with(|| fits(&cuts, usize::from(i > 0)).map(|t| t.lines().count()))
+    };
+    // A cut before layer p costs one per edge crossing it (so one edge wraps
+    // around like text) and three per subgraph it splits.
+    let at: Vec<usize> = layers.iter().map(|l| distinct.binary_search(l).unwrap_or(0)).collect();
+    let cut_cost = |p: usize| {
+        let crossing = graph.edges.iter().filter(|e| (at[e.src] < p) != (at[e.dst] < p)).count();
+        let split = (0..graph.groups.len())
+            .filter(|&g| {
+                let sides: HashSet<bool> =
+                    (0..at.len()).filter(|&v| graph.nodes[v].group == Some(g)).map(|v| at[v] < p).collect();
+                sides.len() == 2
+            })
+            .count();
+        crossing + 3 * split
+    };
+    // Fewest bands, then least height, then the cheapest cuts. best[j] is the
+    // best way to lay out layers [0, j): (bands, height, cut cost, start of last band).
+    let mut best: Vec<Option<(usize, usize, usize, usize)>> = vec![None; n + 1];
+    best[0] = Some((0, 0, 0, 0));
+    for j in 1..=n {
+        for i in (0..j).rev() {
+            let Some((bands, height, cost, _)) = best[i] else { continue };
+            let Some(h) = band_height(i, j) else { break };
+            let cand = (bands + 1, height + h, cost + if i > 0 { cut_cost(i) } else { 0 }, i);
+            if best[j].is_none_or(|b| (cand.0, cand.1, cand.2) < (b.0, b.1, b.2)) {
+                best[j] = Some(cand);
+            }
         }
     }
+    let mut cuts = vec![];
+    let mut j = n;
+    while j > 0 {
+        let (_, _, _, i) = best[j]?;
+        cuts.push(i);
+        j = i;
+    }
+    cuts.reverse();
     if cuts.len() < 2 {
         return None;
     }

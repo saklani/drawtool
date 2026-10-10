@@ -380,12 +380,43 @@ impl Layout {
                 keyed.sort_by(|a, b| rank_of[a.1].cmp(&rank_of[b.1]).then(a.0.partial_cmp(&b.0).unwrap()));
                 self.layers[k] = keyed.into_iter().map(|(_, v)| v).collect();
             }
+            self.transpose(&rank_of);
             let c = crossings(&self.layers, &self.nodes);
             if c < best_c {
                 (best, best_c) = (self.layers.clone(), c);
             }
         }
         self.layers = best;
+    }
+
+    /// Swap neighbours in a layer (within a lane) while that lowers the
+    /// crossings between their edges ("transpose", as in Graphviz dot).
+    fn transpose(&mut self, lane_rank: &[usize]) {
+        let mut pos = vec![0usize; self.nodes.len()];
+        for lay in &self.layers {
+            lay.iter().enumerate().for_each(|(i, &v)| pos[v] = i);
+        }
+        // Crossings among the edges of `a` and `b` when `a` is placed first.
+        let cost = |nodes: &[Node], pos: &[usize], a: usize, b: usize| -> usize {
+            let side = |na: &[usize], nb: &[usize]| {
+                na.iter().map(|&x| nb.iter().filter(|&&y| pos[x] > pos[y]).count()).sum::<usize>()
+            };
+            side(&nodes[a].up, &nodes[b].up) + side(&nodes[a].down, &nodes[b].down)
+        };
+        let mut improved = true;
+        while improved {
+            improved = false;
+            for lay in &mut self.layers {
+                for i in 1..lay.len() {
+                    let (a, b) = (lay[i - 1], lay[i]);
+                    if lane_rank[a] == lane_rank[b] && cost(&self.nodes, &pos, b, a) < cost(&self.nodes, &pos, a, b) {
+                        lay.swap(i - 1, i);
+                        (pos[a], pos[b]) = (i, i - 1);
+                        improved = true;
+                    }
+                }
+            }
+        }
     }
 
     /// One segment per layer gap. Back edges get their own port so their
@@ -546,6 +577,12 @@ impl Layout {
             let distinct = |f: fn(&Seg) -> PortKey| comp.iter().map(|&c| f(&segs[c])).collect::<HashSet<_>>().len();
             comp.len() == 1 || distinct(|s| s.sk) == 1 || distinct(|s| s.tk) == 1
         };
+        // Crossings between `a` and `b` if `a` takes the higher track: `a`'s
+        // way down and `b`'s way up each cross the other's horizontal.
+        let above = |a: usize, b: usize| -> i64 {
+            let inside = |x: i64, (lo, hi): (i64, i64)| lo < x && x < hi;
+            i64::from(inside(segs[a].ct, segs[b].span())) + i64::from(inside(segs[b].cs, segs[a].span()))
+        };
         let mut assigned: Vec<(usize, i64)> = Vec::new();
         for k in 0..self.layers.len() {
             let mut bent: Vec<usize> =
@@ -567,7 +604,18 @@ impl Layout {
                 if ready.is_empty() {
                     ready = vec![*remaining.iter().min_by_key(|&&i| preds[i].difference(&done).count()).unwrap()];
                 }
-                for i in ready {
+                // Within a ready batch, put first (higher) the segment whose
+                // verticals cross the fewest horizontals of the others.
+                while !ready.is_empty() {
+                    let score = |i: usize| -> i64 {
+                        remaining
+                            .iter()
+                            .filter(|&&r| r != i)
+                            .map(|&r| above(bent[i], bent[r]) - above(bent[r], bent[i]))
+                            .sum()
+                    };
+                    let k = (0..ready.len()).min_by_key(|&k| score(ready[k])).unwrap();
+                    let i = ready.remove(k);
                     order.push(i);
                     done.insert(i);
                     remaining.retain(|&r| r != i);
@@ -663,34 +711,38 @@ impl Layout {
             }
         }
 
-        // Edges: segments sharing a port are one net, drawn as one connected line.
-        let mut parent: HashMap<PortKey, PortKey> = HashMap::new();
-        let find = |parent: &HashMap<PortKey, PortKey>, mut x: PortKey| {
-            while let Some(&up) = parent.get(&x).filter(|&&up| up != x) {
-                x = up;
-            }
-            x
-        };
-        for s in &self.segs {
-            let (a, b) = (find(&parent, s.sk), find(&parent, s.tk));
-            if a != b {
-                parent.insert(a, b);
-            }
-        }
+        // Edges. Each piece belongs to the port it hangs off: the vertical out
+        // of a node to its out-port, the vertical into a node to its in-port,
+        // and a track to the port its fan-out (or fan-in) shares. Pieces of
+        // different ports that pass through each other are drawn as crossings.
         let mut nets: HashMap<PortKey, usize> = HashMap::new();
+        let mut net = |p: &mut Painter, key: PortKey| *nets.entry(key).or_insert_with(|| p.net());
         let arrows = if self.td { ['▼', '▲'] } else { ['►', '◄'] };
-        for s in &self.segs {
+        for (i, s) in self.segs.iter().enumerate() {
             let k = self.nodes[s.u].layer;
             let (a, b) = (out_l(s.u), in_l(s.v));
-            let mut pts = vec![(a + i64::from(s.arrow_start), s.cs)];
+            let (start, end) = ((a + i64::from(s.arrow_start), s.cs), (b - i64::from(s.arrow_end), s.ct));
+            let mut pieces = vec![(s.sk, vec![start, (end.0, s.cs)])];
             if s.cs != s.ct {
                 let t = self.cstart[k] + self.lead[k] + s.track;
-                pts.extend([(t, s.cs), (t, s.ct)]);
+                // A track shared with a segment from another port is a fan-in.
+                let fan_in = self.segs.iter().enumerate().any(|(j, o)| {
+                    j != i && self.nodes[o.u].layer == k && o.track == s.track && o.cs != o.ct && o.sk != s.sk && {
+                        let (x, y) = (s.span(), o.span());
+                        x.0 <= y.1 && y.0 <= x.1
+                    }
+                });
+                pieces = vec![
+                    (s.sk, vec![start, (t, s.cs)]),
+                    (if fan_in { s.tk } else { s.sk }, vec![(t, s.cs), (t, s.ct)]),
+                    (s.tk, vec![(t, s.ct), end]),
+                ];
             }
-            pts.push((b - i64::from(s.arrow_end), s.ct));
-            let net = *nets.entry(find(&parent, s.sk)).or_insert_with(|| p.net());
-            let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
-            p.line(&pts, net, Weight::Light, s.style, false);
+            for (key, pts) in pieces {
+                let id = net(&mut p, key);
+                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
+                p.line(&pts, id, Weight::Light, s.style, false);
+            }
             if s.arrow_end {
                 let (x, y) = self.phys(b - 1, s.ct);
                 p.symbol(x, y, arrows[0]);

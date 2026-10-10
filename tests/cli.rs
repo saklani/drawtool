@@ -175,3 +175,33 @@ done -.->|back| home";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 120);
     assert!(fitted.text.contains("Onboarding") && fitted.text.contains("Success"));
 }
+
+/// Cells where a vertical line passes straight through a horizontal one.
+fn crossings(out: &str) -> usize {
+    let rows: Vec<Vec<char>> = out.lines().map(|l| l.chars().collect()).collect();
+    let (v, h) = ("│┆┃║", "─┄━═");
+    rows.iter()
+        .map(|r| {
+            (1..r.len().saturating_sub(1))
+                .filter(|&x| v.contains(r[x]) && h.contains(r[x - 1]) && h.contains(r[x + 1]))
+                .count()
+        })
+        .sum()
+}
+
+#[test]
+fn channel_tracks_are_ordered_to_avoid_crossings() {
+    // A decision tree whose yes/no edges used to take their channel rows in
+    // the wrong order and cross twice.
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/decisions.mmd")).unwrap();
+    let out = render(&parse(&src).unwrap(), None, false);
+    assert_eq!(crossings(&out), 0, "\n{out}");
+}
+
+#[test]
+fn unrelated_edges_are_never_drawn_as_joined() {
+    // Edges that only share ports transitively (b→e, c→e, c→g) used to merge
+    // into one net, so their crossings rendered as ┼ joins.
+    let out = render(&parse("flowchart LR\nb --> e & f\nc --> e & g\nd --> f & g\nb --> g").unwrap(), None, false);
+    assert!(!out.contains('┼'), "\n{out}");
+}

@@ -1,0 +1,13 @@
+flowchart TD
+  A{Logged in?} -->|yes| B{Admin?}
+  A -->|no| C{Has token?}
+  B -->|yes| D{2FA?}
+  B -->|no| E{Owner?}
+  C -->|yes| F{Token valid?}
+  C -->|no| G[Login page]
+  D -->|yes| H[Admin panel]
+  D -->|no| I[Enroll 2FA]
+  E -->|yes| J[Edit]
+  E -->|no| K[Read only]
+  F -->|yes| L[Refresh session]
+  F -->|no| G

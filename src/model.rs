@@ -52,17 +52,15 @@ pub struct NodeDef {
     pub lines: Vec<String>,
     pub shape: Shape,
     pub mark: Mark,
-    /// Index into `Graph::groups` of the innermost `subgraph` the node
-    /// first appeared in.
+    /// Index into `Graph::groups` of the subgraph the node belongs to: of
+    /// those that mention it, the first to close (so the innermost).
     pub group: Option<usize>,
-    /// Whether a label/shape was given (the first one given wins).
-    pub(crate) explicit: bool,
 }
 
 impl NodeDef {
     #[must_use]
     pub fn new(id: &str, lines: Vec<String>, shape: Shape) -> Self {
-        NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, group: None, explicit: true }
+        NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, group: None }
     }
 }
 

@@ -30,14 +30,16 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 | `a -->\|label\| b` or `a -- label --> b` | labelled edge (what data flows) |
 | `a -.-> b` / `a ==> b` / `a --- b` | dotted (async, optional, side effect) / thick (main path) / no arrow |
 | `a --> b & c`, `a & b --> c` | fan-out / fan-in |
-| `a[line one\nline two]` | multi-line label |
+| `a[line one<br>line two]` | multi-line label |
 | `wireframe Title` then indented `header:`, `input:`, `button:`, `card X:`, `row:`, `- item \| $1` | screen mockup (see README) |
 | `subgraph api [API server]` ... `end` | dashed group frame (layers, services, vendors) |
 | `%% highlight: a, b, c` | draw that path thick (the branch a request takes, where a bug is) |
 | `%% comment` | comment |
 | `sequenceDiagram` then `a->>b: msg`, `b-->>a: reply` | sequence diagram (see below) |
 
-Define a node's label once (`p(parse_body)`), then refer to it by id (`p`). Cycles and self-loops work.
+Define a node's label once (`p(parse_body)`), then refer to it by id (`p`); if a label is given twice, the last
+one wins (as in Mermaid). Cycles and self-loops work. The input is a strict subset of Mermaid, so
+the same source renders on GitHub; `RL`/`BT`, `<-->`, `--o`/`--x`, `~~~` and edges to a subgraph are errors.
 For "what does this screen look like" (UI code, a component tree, a design discussion), draw a
 `wireframe` from the real components and copy; several screens side by side show a flow.
 `drawtool --diff before.mmd after.mmd` draws one diagram of a change: `+` added, `-` removed,

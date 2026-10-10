@@ -303,7 +303,9 @@ wireframe Home
 
 ## Syntax
 
-A subset of Mermaid flowchart syntax:
+A strict subset of Mermaid flowchart syntax: anything drawtool accepts means the same thing to
+Mermaid, so a diagram renders the same on GitHub. (Checked against Mermaid 12.1's own parser on
+thousands of generated diagrams.)
 
 ```
 flowchart LR                  %% LR = left-to-right (default), TD = top-down
@@ -315,17 +317,26 @@ save -.-> cache[invalidate]   %% dotted
 save ==> resp[201 Created]    %% thick
 a --> b & c                   %% fan-out (also: a & b --> c)
 x --- y                       %% no arrowhead
-n[two\nlines]                 %% multi-line label (\n or <br>)
+n[two<br>lines]               %% multi-line label
+a[x] --> b; b --> c           %% `;` separates statements
 subgraph api [API server]     %% dashed group frame
   mw --> route
 end
 ```
 
-Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`.
-Cycles (back edges are routed around the outside), self-loops and `subgraph ... end` groups
-(nested ones are flattened) are supported.
+Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`. Other Mermaid
+shapes (`((circle))`, `{{hexagon}}`, `[/lean/]`, `>flag]`, ...) keep their label and are drawn as the
+nearest of these. Cycles (back edges are routed around the outside), self-loops and
+`subgraph ... end` groups (nested ones are flattened) are supported. As in Mermaid, a node's last
+label wins, `:::class`, `classDef`, `style`, `linkStyle` and `click` don't change the drawing, and a
+node belongs to the innermost subgraph that mentions it.
+
+Not supported, and rejected with an error rather than drawn wrong: `RL`/`BT` directions, `<-->`,
+`--o`, `--x`, `~~~`, and edges to a subgraph. drawtool also accepts a few things Mermaid doesn't:
+no `flowchart` line (drawn left-to-right), `%%` comments at the end of a line, `#` comment lines,
+and `%% highlight: a, b` (a plain comment to Mermaid).
+
 In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).
-Unlike Mermaid, a diagram without a `flowchart` line is drawn left-to-right.
 
 ## Claude Code skill
 

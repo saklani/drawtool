@@ -21,9 +21,9 @@ fn wide_characters_keep_boxes_aligned() {
 }
 
 #[test]
-fn first_explicit_label_wins() {
-    let g = parse("a[First] --> b\na[Second] --> c").unwrap();
-    assert_eq!(g.nodes[0].lines, vec!["First"]);
+fn last_explicit_label_wins_as_in_mermaid() {
+    let g = parse("a[First] --> b\na[Second] --> c\na --> d").unwrap();
+    assert_eq!(g.nodes[0].lines, vec!["Second"]);
 }
 
 /// Some line of `out` contains both `a` and `b`: in LR, consecutive boxes sit

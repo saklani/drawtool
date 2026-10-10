@@ -22,7 +22,8 @@ pub(crate) fn unquote(s: &str) -> String {
 
 struct Patterns {
     id: Regex,
-    connectors: Vec<(Regex, Style, bool)>,
+    connectors: Vec<(Regex, Style)>,
+    class_suffix: Regex,
     pipe_label: Regex,
     header: Regex,
     bare_header: Regex,
@@ -35,34 +36,45 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
     let rx = |s: &str| Regex::new(s).unwrap();
     Patterns {
         id: rx(r"^\w[\w.:$]*"),
+        // Labelled forms first; a label ends at the first closing arrow, so
+        // `a -- x --- b -- y --> c` is two edges.
         connectors: vec![
-            (rx(r"^--\s+(.+?)\s+-->"), Style::Solid, true),
-            (rx(r"^--\s+(.+?)\s+---"), Style::Solid, false),
-            (rx(r"^-\.\s+(.+?)\s+\.->"), Style::Dotted, true),
-            (rx(r"^==\s+(.+?)\s+==>"), Style::Thick, true),
-            (rx(r"^-\.+->"), Style::Dotted, true),
-            (rx(r"^-+>"), Style::Solid, true),
-            (rx(r"^=+>"), Style::Thick, true),
-            (rx(r"^-\.+-"), Style::Dotted, false),
-            (rx(r"^-{3,}"), Style::Solid, false),
-            (rx(r"^={3,}"), Style::Thick, false),
+            (rx(r"^--\s*([^\s>-].*?)\s*(?:-{2,}>|-{3,})"), Style::Solid),
+            (rx(r"^-\.\s*([^\s.>-].*?)\s*\.-+>?"), Style::Dotted),
+            (rx(r"^==\s*([^\s=>].*?)\s*(?:=+>|={3,})"), Style::Thick),
+            (rx(r"^-\.+->"), Style::Dotted),
+            (rx(r"^-{2,}>"), Style::Solid),
+            (rx(r"^={2,}>"), Style::Thick),
+            (rx(r"^-\.+-"), Style::Dotted),
+            (rx(r"^-{3,}"), Style::Solid),
+            (rx(r"^={3,}"), Style::Thick),
         ],
+        class_suffix: rx(r"^:::\w[\w-]*"),
         pipe_label: rx(r"^\s*\|([^|]*)\|"),
         header: rx(r"(?i)^(?:(?:flowchart|graph)\s+|direction\s+)?(TD|TB|BT|LR|RL)$"),
         bare_header: rx(r"(?i)^(?:flowchart|graph)$"),
         ignored: rx(r"^(?:classDef|class|style|linkStyle|click)\b"),
-        subgraph: rx(r#"^subgraph\s+(?:(\w[\w.:$-]*)\s*\[(.*)\]|(.+))$"#),
+        // `subgraph id [title]`, `subgraph id`, or `subgraph any title`.
+        subgraph: rx(r#"^subgraph\s+(?:(\w[\w.:$-]*)\s*\[(.*)\]|(\w[\w.:$-]*)|(.+))$"#),
         br: rx(r"(?i)<br\s*/?>"),
     }
 });
 
-/// Shape brackets, two-character openers first so `[(` wins over `[`.
+/// Shape brackets, longest openers first so `[(` wins over `[`. Shapes
+/// drawtool has no glyphs for (parallelograms, trapezoids, `>flag]`, double
+/// circles) keep their label and are drawn as the nearest shape it has.
 const SHAPES: &[(&str, &str, Shape)] = &[
+    ("(((", ")))", Shape::Round),
     ("([", "])", Shape::Round),
     ("[(", ")]", Shape::Database),
     ("((", "))", Shape::Round),
     ("[[", "]]", Shape::Box),
     ("{{", "}}", Shape::Decision),
+    ("[/", "/]", Shape::Box),
+    ("[/", "\\]", Shape::Box),
+    ("[\\", "\\]", Shape::Box),
+    ("[\\", "/]", Shape::Box),
+    (">", "]", Shape::Box),
     ("[", "]", Shape::Box),
     ("(", ")", Shape::Round),
     ("{", "}", Shape::Decision),
@@ -75,17 +87,26 @@ pub fn clean_label(text: &str) -> Vec<String> {
     t.split('\n').map(|l| l.trim().to_string()).collect()
 }
 
+/// A flowchart label as Mermaid reads it: only `"…"` quotes are stripped,
+/// and only `<br>` breaks a line.
+fn label(text: &str) -> Vec<String> {
+    let t = text.trim();
+    let t = t.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(t);
+    PATTERNS.br.split(t).map(|l| l.trim().to_string()).collect()
+}
+
 /// The first position at or after `pos` that isn't whitespace.
 fn skip_ws(s: &str, pos: usize) -> usize {
     s.len() - s[pos..].trim_start().len()
 }
 
-/// Find a closing delimiter that is followed by end-of-line, `&` or an edge.
+/// Find a closing delimiter that is followed by end-of-line, `&`, `;`, a
+/// `:::class` or an edge.
 fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
     let mut from = start;
     while let Some(off) = s[from..].find(close) {
         let i = from + off;
-        if s[i + close.len()..].trim_start().chars().next().is_none_or(|c| "-=&.%".contains(c)) {
+        if s[i + close.len()..].trim_start().chars().next().is_none_or(|c| "-=&.%;:".contains(c)) {
             return Some(i);
         }
         from = i + 1;
@@ -96,44 +117,67 @@ fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
 /// A failed statement: the byte offset where it went wrong, and why.
 type Fail = (usize, String);
 
+/// A `subgraph` block being read: its group, its line, and the nodes
+/// mentioned in it so far.
+struct Open {
+    group: usize,
+    line: usize,
+    nodes: Vec<usize>,
+}
+
 struct Parser {
     nodes: Vec<NodeDef>,
     index: HashMap<String, usize>,
     edges: Vec<EdgeDef>,
-    /// Open `subgraph` blocks (group, line), innermost last.
-    open: Vec<(usize, usize)>,
+    /// Open `subgraph` blocks, innermost last.
+    open: Vec<Open>,
 }
 
 impl Parser {
+    /// The node called `id`, added if it's new.
+    fn node_id(&mut self, id: &str) -> usize {
+        *self.index.entry(id.to_string()).or_insert_with(|| {
+            self.nodes.push(NodeDef::new(id, vec![id.to_string()], Shape::Box));
+            self.nodes.len() - 1
+        })
+    }
+
+    /// Close the innermost subgraph. As in Mermaid, the first subgraph to
+    /// close claims the nodes mentioned in it, so inner ones win.
+    fn close(&mut self) -> bool {
+        let Some(open) = self.open.pop() else { return false };
+        for i in open.nodes {
+            self.nodes[i].group = self.nodes[i].group.or(Some(open.group));
+        }
+        true
+    }
+
+    /// `id`, an optional shape with its label (the last one given wins, as
+    /// in Mermaid), and an optional `:::class`, which is ignored.
     fn node(&mut self, s: &str, pos: usize) -> Result<(usize, usize), Fail> {
         let m = PATTERNS.id.find(&s[pos..]).ok_or_else(|| (pos, format!("expected a node id at {:?}", &s[pos..])))?;
-        let id = m.as_str().to_string();
-        let pos = pos + m.end();
-        let group = self.open.last().map(|o| o.0);
-        let idx = if let Some(&i) = self.index.get(&id) {
-            if self.nodes[i].group.is_none() {
-                self.nodes[i].group = group;
-            }
-            i
-        } else {
-            self.nodes.push(NodeDef { group, explicit: false, ..NodeDef::new(&id, vec![id.clone()], Shape::Box) });
-            self.index.insert(id.clone(), self.nodes.len() - 1);
-            self.nodes.len() - 1
-        };
-        for &(opener, closer, shape) in SHAPES {
-            if s[pos..].starts_with(opener) {
-                let end = find_close(s, pos + opener.len(), closer)
-                    .ok_or_else(|| (pos, format!("unclosed {opener:?} for node {id:?}")))?;
-                let node = &mut self.nodes[idx];
-                if !node.explicit {
-                    node.lines = clean_label(&s[pos + opener.len()..end]);
-                    node.shape = shape;
-                    node.explicit = true;
-                }
-                return Ok((idx, end + closer.len()));
-            }
+        let id = m.as_str().split(":::").next().unwrap_or_default();
+        let idx = self.node_id(id);
+        if let Some(open) = self.open.last_mut() {
+            open.nodes.push(idx);
         }
-        Ok((idx, pos))
+        let mut pos = pos + id.len();
+        let mut unclosed = None;
+        for &(opener, closer, shape) in SHAPES.iter().filter(|sh| s[pos..].starts_with(sh.0)) {
+            if let Some(end) = find_close(s, pos + opener.len(), closer) {
+                let node = &mut self.nodes[idx];
+                node.lines = label(&s[pos + opener.len()..end]);
+                node.shape = shape;
+                pos = end + closer.len();
+                unclosed = None;
+                break;
+            }
+            unclosed = unclosed.or(Some(opener));
+        }
+        if let Some(opener) = unclosed {
+            return Err((pos, format!("unclosed {opener:?} for node {id:?}")));
+        }
+        Ok((idx, pos + PATTERNS.class_suffix.find(&s[pos..]).map_or(0, |m| m.end())))
     }
 
     fn group(&mut self, s: &str, mut pos: usize) -> Result<(Vec<usize>, usize), Fail> {
@@ -151,30 +195,39 @@ impl Parser {
         }
     }
 
+    /// Groups joined by arrows; `;` starts another statement on the same line.
     fn statement(&mut self, s: &str) -> Result<(), Fail> {
         let (mut group, mut pos) = self.group(s, 0)?;
         loop {
             pos = skip_ws(s, pos);
-            if pos >= s.len() || s[pos..].starts_with("%%") {
+            if let Some(rest) = s[pos..].strip_prefix(';') {
+                if rest.trim().is_empty() {
+                    return Ok(());
+                }
+                (group, pos) = self.group(s, pos + 1)?;
+                continue;
+            }
+            if pos >= s.len() {
                 return Ok(());
             }
-            let (caps, style, arrow) = PATTERNS
+            let (caps, style) = PATTERNS
                 .connectors
                 .iter()
-                .find_map(|(rx, st, ar)| rx.captures(&s[pos..]).map(|c| (c, *st, *ar)))
+                .find_map(|(rx, st)| rx.captures(&s[pos..]).map(|c| (c, *st)))
                 .ok_or_else(|| (pos, format!("expected an arrow like --> at {:?}", &s[pos..])))?;
-            let mut label = caps.get(1).map(|m| m.as_str().to_string());
-            pos += caps.get(0).unwrap().end();
+            let arrow = caps[0].ends_with('>');
+            let mut text = caps.get(1).map(|m| m.as_str().to_string());
+            pos += caps[0].len();
             if let Some(pm) = PATTERNS.pipe_label.captures(&s[pos..]) {
-                label = Some(pm[1].to_string());
-                pos += pm.get(0).unwrap().end();
+                text = Some(pm[1].to_string());
+                pos += pm[0].len();
             }
-            let label = label.filter(|l| !l.trim().is_empty()).map(|l| clean_label(&l));
+            let text = text.filter(|l| !l.trim().is_empty()).map(|l| label(&l));
             let (nxt, p) = self.group(s, pos)?;
             pos = p;
             for &a in &group {
                 for &b in &nxt {
-                    self.edges.push(EdgeDef { src: a, dst: b, label: label.clone(), style, arrow });
+                    self.edges.push(EdgeDef { src: a, dst: b, label: text.clone(), style, arrow });
                 }
             }
             group = nxt;
@@ -187,12 +240,15 @@ impl Parser {
 /// # Errors
 ///
 /// A line that isn't valid flowchart syntax, an unbalanced `subgraph`/`end`,
-/// or a `%% highlight:` path that doesn't exist.
+/// a reversed direction (`RL`, `BT`), an edge to a subgraph, or a
+/// `%% highlight:` path that doesn't exist.
 pub fn parse(text: &str) -> Result<Graph, Error> {
     let pats = &*PATTERNS;
     let mut direction = Direction::LR;
     let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new(), open: Vec::new() };
     let mut groups: Vec<Group> = Vec::new();
+    // Subgraph ids (id, line): a node may not reuse one.
+    let mut group_ids: Vec<(String, usize)> = Vec::new();
     let mut highlight: Option<(usize, Vec<String>)> = None;
     for (lineno, raw) in text.lines().enumerate() {
         let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
@@ -204,13 +260,16 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             continue;
         }
         if let Some(c) = pats.subgraph.captures(line) {
-            let title = c.get(2).or_else(|| c.get(1)).or_else(|| c.get(3)).map_or("", |m| m.as_str());
-            groups.push(Group { title: clean_label(title).join(" ") });
-            p.open.push((groups.len() - 1, lineno + 1));
+            if let Some(id) = c.get(1).or_else(|| c.get(3)) {
+                group_ids.push((id.as_str().to_string(), lineno + 1));
+            }
+            let title = [2, 1, 3, 4].into_iter().find_map(|i| c.get(i)).map_or("", |m| m.as_str());
+            groups.push(Group { title: label(title).join(" ") });
+            p.open.push(Open { group: groups.len() - 1, line: lineno + 1, nodes: Vec::new() });
             continue;
         }
         if line == "end" {
-            if p.open.pop().is_none() {
+            if !p.close() {
                 return Err(Error::at(lineno + 1, "`end` without a matching `subgraph`"));
             }
             continue;
@@ -219,11 +278,23 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             if !p.open.is_empty() {
                 continue; // a subgraph's own direction isn't supported
             }
-            let d = c[1].to_uppercase();
-            direction = if d == "LR" || d == "RL" { Direction::LR } else { Direction::TD };
+            direction = match c[1].to_uppercase().as_str() {
+                "LR" => Direction::LR,
+                "TD" | "TB" => Direction::TD,
+                d => return Err(Error::at(lineno + 1, format!("`{d}` isn't supported: use LR or TD"))),
+            };
             continue;
         }
-        if pats.bare_header.is_match(line) || pats.ignored.is_match(line) {
+        if pats.bare_header.is_match(line) {
+            direction = Direction::TD; // Mermaid's default once there is a header
+            continue;
+        }
+        // `style n1 …` declares n1, as in Mermaid; other styling is ignored.
+        if let Some(id) = line.strip_prefix("style ").and_then(|r| pats.id.find(r.trim_start())) {
+            p.node_id(id.as_str());
+            continue;
+        }
+        if pats.ignored.is_match(line) {
             continue;
         }
         p.statement(line).map_err(|(at, message)| {
@@ -232,8 +303,14 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             Error::at_column(lineno + 1, raw[..indent].chars().count() + line[..at].chars().count() + 1, message)
         })?;
     }
-    if let Some(&(g, line)) = p.open.first() {
-        return Err(Error::at(line, format!("`subgraph {}` is never closed with `end`", groups[g].title)));
+    if let Some(o) = p.open.first() {
+        return Err(Error::at(o.line, format!("`subgraph {}` is never closed with `end`", groups[o.group].title)));
+    }
+    if let Some((id, line)) = group_ids.iter().find(|(id, _)| p.index.contains_key(id)) {
+        return Err(Error::at(
+            *line,
+            format!("`{id}` is both a subgraph and a node (edges to subgraphs aren't supported)"),
+        ));
     }
     let mut graph = Graph { direction, nodes: p.nodes, edges: p.edges, groups };
     if let Some((lineno, ids)) = highlight {

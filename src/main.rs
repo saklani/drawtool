@@ -15,12 +15,16 @@ Syntax (a subset of Mermaid flowcharts):
   save ==> resp[201 Created]            %% thick edge
   a --> b & c                           %% fan-out (also: a & b --> c)
   x --- y                               %% edge without arrowhead
-  n[two\\nlines]                         %% multi-line label (\\n or <br>)
+  n[two<br>lines]                        %% multi-line label
+  a[x] --> b; b --> c                   %% `;` separates statements
   subgraph api [API server]             %% dashed group frame
     mw --> route
   end
 
 Shapes: [box]  (rounded)  {decision}  ([stadium])  [(database)]  [[sub]]
+Other Mermaid shapes keep their label and are drawn as the nearest of these.
+Any valid input here is valid Mermaid and means the same; RL/BT, <-->, --o, --x,
+~~~ and edges to a subgraph are rejected. A missing header means LR.
 
 Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
   sequenceDiagram

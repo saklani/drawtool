@@ -55,9 +55,15 @@ pub enum Item {
     Message(Message),
     Note(Note),
     /// `loop`, `alt`, `opt`, `par`, ... opening a frame.
-    Start { kind: String, text: String },
+    Start {
+        kind: String,
+        text: String,
+    },
     /// `else` / `and` inside a frame.
-    Divider { kind: String, text: String },
+    Divider {
+        kind: String,
+        text: String,
+    },
     End,
 }
 
@@ -170,12 +176,18 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, String> {
             items.push(Item::End);
         } else if let Some(c) = p.start.captures(line) {
             open.push((c[1].to_string(), lineno));
-            items.push(Item::Start { kind: c[1].to_string(), text: c.get(2).map_or("", |m| m.as_str()).trim().to_string() });
+            items.push(Item::Start {
+                kind: c[1].to_string(),
+                text: c.get(2).map_or("", |m| m.as_str()).trim().to_string(),
+            });
         } else if let Some(c) = p.divider.captures(line) {
             if open.is_empty() {
                 return Err(format!("line {lineno}: `{}` outside a block", &c[1]));
             }
-            items.push(Item::Divider { kind: c[1].to_string(), text: c.get(2).map_or("", |m| m.as_str()).trim().to_string() });
+            items.push(Item::Divider {
+                kind: c[1].to_string(),
+                text: c.get(2).map_or("", |m| m.as_str()).trim().to_string(),
+            });
         } else if let Some(c) = p.message.captures(line) {
             let from = b.get(&c[1]);
             let to = b.get(&c[3]);
@@ -308,7 +320,11 @@ impl Canvas {
         for (i, line) in lines.iter().enumerate() {
             let pad = (width - 2 - text_width(line)).div_euclid(2);
             let fill = (width - 2 - pad - text_width(line)).max(0) as usize;
-            self.text(left, top + 1 + i as i64, &format!("{v}{}{line}{}{v}", " ".repeat(pad.max(0) as usize), " ".repeat(fill)));
+            self.text(
+                left,
+                top + 1 + i as i64,
+                &format!("{v}{}{line}{}{v}", " ".repeat(pad.max(0) as usize), " ".repeat(fill)),
+            );
         }
         self.text(left, top + 1 + lines.len() as i64, &format!("{bl}{bar}{br}"));
     }
@@ -433,9 +449,7 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
 fn columns(seq: &Sequence) -> Vec<i64> {
     let n = seq.participants.len();
     let boxw: Vec<i64> = seq.participants.iter().map(|p| lines_width(&p.lines) + 4).collect();
-    let mut gap: Vec<i64> = (0..n.saturating_sub(1))
-        .map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3)
-        .collect();
+    let mut gap: Vec<i64> = (0..n.saturating_sub(1)).map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3).collect();
     let mut spans: Vec<(usize, usize, i64)> = Vec::new();
     let mut need = |gap: &mut Vec<i64>, lo: usize, hi: usize, d: i64| {
         if hi == lo + 1 {
@@ -615,11 +629,15 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
                 cv.put(xi + 1, r, h);
                 cv.put(xi + 2, r, h);
                 cv.put(xi + 3, r, g.loop_chars[0]);
-                cv.put(xi + 1, r + 1, match m.head {
-                    Head::Arrow => g.head_left,
-                    Head::Cross => g.cross,
-                    Head::Open => h,
-                });
+                cv.put(
+                    xi + 1,
+                    r + 1,
+                    match m.head {
+                        Head::Arrow => g.head_left,
+                        Head::Cross => g.cross,
+                        Head::Open => h,
+                    },
+                );
                 cv.put(xi + 2, r + 1, h);
                 cv.put(xi + 3, r + 1, g.loop_chars[1]);
                 if m.head == Head::Open {

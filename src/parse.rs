@@ -178,10 +178,7 @@ struct Parser {
 
 impl Parser {
     fn node(&mut self, s: &str, pos: usize) -> Result<(usize, usize), String> {
-        let m = patterns()
-            .id
-            .find(&s[pos..])
-            .ok_or_else(|| format!("expected a node id at {}", quote(&s[pos..])))?;
+        let m = patterns().id.find(&s[pos..]).ok_or_else(|| format!("expected a node id at {}", quote(&s[pos..])))?;
         let id = m.as_str().to_string();
         let pos = pos + m.end();
         let group = self.open.last().copied();

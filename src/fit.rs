@@ -268,9 +268,7 @@ fn from_grid(grid: &[Vec<char>]) -> String {
 }
 
 fn find_label(grid: &[Vec<char>], label: &[char]) -> Option<(usize, usize)> {
-    grid.iter().enumerate().find_map(|(r, row)| {
-        row.windows(label.len()).position(|w| w == label).map(|c| (r, c))
-    })
+    grid.iter().enumerate().find_map(|(r, row)| row.windows(label.len()).position(|w| w == label).map(|c| (r, c)))
 }
 
 fn cell(grid: &[Vec<char>], r: usize, c: usize) -> char {
@@ -295,7 +293,8 @@ fn wrap_around(upper: &mut [Vec<char>], lower: &mut [Vec<char>], label: &str, as
     let (r, c) = find_label(upper, &label)?;
     let (r2, c2) = find_label(lower, &label)?;
     let corner = if ascii { '.' } else { '╭' };
-    if r == 0 || r2 == 0 || c < 3 || c2 != 2 || cell(upper, r - 1, c - 2) != corner || cell(lower, r2 - 1, 0) != corner {
+    if r == 0 || r2 == 0 || c < 3 || c2 != 2 || cell(upper, r - 1, c - 2) != corner || cell(lower, r2 - 1, 0) != corner
+    {
         return None;
     }
     let t = c; // column where the line turns down

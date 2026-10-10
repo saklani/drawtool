@@ -254,8 +254,11 @@ fn crossings(layers: &[Vec<usize>], down: &[Vec<usize>]) -> usize {
 
 /// Break cycles, turn edge labels into nodes, and assign each node a layer.
 fn layer_graph(graph: &Graph, gl: &Glyphs) -> (Vec<LNode>, Vec<Edge>, Vec<Vec<usize>>, Vec<i64>) {
-    let mut ln: Vec<LNode> =
-        graph.nodes.iter().map(|n| LNode { mark: n.mark, ..LNode::new(n.lines.clone(), n.shape, Kind::Real) }).collect();
+    let mut ln: Vec<LNode> = graph
+        .nodes
+        .iter()
+        .map(|n| LNode { mark: n.mark, ..LNode::new(n.lines.clone(), n.shape, Kind::Real) })
+        .collect();
     let nreal = ln.len();
     let mut looped = vec![false; nreal];
     for e in &graph.edges {
@@ -594,12 +597,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
             }
         }
     }
-    let shift = ln
-        .iter()
-        .enumerate()
-        .map(|(v, n)| n.pos - if framed(lane[v]) { FRAME } else { 0 })
-        .min()
-        .unwrap();
+    let shift = ln.iter().enumerate().map(|(v, n)| n.pos - if framed(lane[v]) { FRAME } else { 0 }).min().unwrap();
     for nd in ln.iter_mut() {
         nd.pos -= shift;
     }
@@ -629,9 +627,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
                     }
                     *free
                         .iter()
-                        .min_by_key(|&&x| {
-                            (used.iter().any(|u| (x - u).abs() < 2), (x - c) * toward < 0, (x - c).abs())
-                        })
+                        .min_by_key(|&&x| (used.iter().any(|u| (x - u).abs() < 2), (x - c) * toward < 0, (x - c).abs()))
                         .unwrap()
                 }
             };
@@ -705,8 +701,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         let (mut order, mut done) = (Vec::new(), HashSet::new());
         let mut remaining: Vec<usize> = (0..nb).collect();
         while !remaining.is_empty() {
-            let mut ready: Vec<usize> =
-                remaining.iter().copied().filter(|&i| preds[i].is_subset(&done)).collect();
+            let mut ready: Vec<usize> = remaining.iter().copied().filter(|&i| preds[i].is_subset(&done)).collect();
             if ready.is_empty() {
                 ready = vec![*remaining.iter().min_by_key(|&&i| preds[i].difference(&done).count()).unwrap()];
             }
@@ -754,8 +749,15 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         cur += layers[k].iter().map(|&v| ln[v].lsize).max().unwrap_or(0);
         if k < nl - 1 {
             let ss = &chan[k];
-            let ntracks = ss.iter().filter(|&&i| segs[i].cs != segs[i].ct).map(|&i| segs[i].track + 1).max().unwrap_or(0);
-            lead[k] = if !td { 1 } else if ss.iter().any(|&i| segs[i].arrow_start) { 1 } else { 0 };
+            let ntracks =
+                ss.iter().filter(|&&i| segs[i].cs != segs[i].ct).map(|&i| segs[i].track + 1).max().unwrap_or(0);
+            lead[k] = if !td {
+                1
+            } else if ss.iter().any(|&i| segs[i].arrow_start) {
+                1
+            } else {
+                0
+            };
             if ends_at(k) {
                 lead[k] += FRAME;
             }
@@ -784,10 +786,10 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         }
     }
     let line = |mask: &mut HashMap<(i64, i64), Vec<(PortKey, u8, Style)>>,
-                    p: (i64, i64),
-                    q: (i64, i64),
-                    net: PortKey,
-                    st: Style| {
+                p: (i64, i64),
+                q: (i64, i64),
+                net: PortKey,
+                st: Style| {
         let vertical = p.0 == q.0;
         let (a, b) = if vertical { (p.1.min(q.1), p.1.max(q.1)) } else { (p.0.min(q.0), p.0.max(q.0)) };
         for t in a..=b {
@@ -918,12 +920,14 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
     // Group frames: dashed, drawn only into empty cells so edges pass through.
     for &(l, lo, hi) in &spans {
         let members = (0..ln.len()).filter(|&v| lane[v] == l && ln[v].kind == Kind::Real);
-        let (c0, c1) = members.fold((i64::MAX, i64::MIN), |(a, b), v| (a.min(ln[v].pos), b.max(ln[v].pos + ln[v].csize - 1)));
+        let (c0, c1) =
+            members.fold((i64::MAX, i64::MIN), |(a, b), v| (a.min(ln[v].pos), b.max(ln[v].pos + ln[v].csize - 1)));
         let (l0, l1) = (bstart[lo as usize] - FRAME, band_end(hi as usize) + FRAME);
         let (x0, y0) = phys(l0, c0 - FRAME);
         let (x1, y1) = phys(l1, c1 + FRAME);
         let (x0, x1, y0, y1) = (x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1));
-        let [tl, tr, bl, br, hz, vt] = if ascii { ['+', '+', '+', '+', '.', ':'] } else { ['┌', '┐', '└', '┘', '┄', '┆'] };
+        let [tl, tr, bl, br, hz, vt] =
+            if ascii { ['+', '+', '+', '+', '.', ':'] } else { ['┌', '┐', '└', '┘', '┄', '┆'] };
         let mut put = |cell: (i64, i64), ch: char| {
             out.entry(cell).or_insert(ch);
         };

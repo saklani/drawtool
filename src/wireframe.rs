@@ -40,16 +40,27 @@ pub enum El {
     Divider,
     /// Up to three slots: left, centre, right; followed by a divider.
     Header(Vec<String>),
-    Input { label: String, value: String, select: bool },
+    Input {
+        label: String,
+        value: String,
+        select: bool,
+    },
     /// A full-width primary button. Inline buttons are just text: `[ OK ]`.
     Button(String),
     Image(String),
-    Card { title: String, children: Vec<El> },
+    Card {
+        title: String,
+        children: Vec<El>,
+    },
     Row(Vec<El>),
     Col(Vec<El>),
     /// `tabs` underline the active item on a full baseline; `nav` sits under
     /// a divider (a bottom navigation bar).
-    Tabs { items: Vec<String>, active: Option<usize>, nav: bool },
+    Tabs {
+        items: Vec<String>,
+        active: Option<usize>,
+        nav: bool,
+    },
     Toggle(String, bool),
     Checkbox(String, bool),
     Radio(Vec<String>, Option<usize>),
@@ -78,10 +89,7 @@ pub struct WireFitted {
 
 /// True if the first meaningful line starts a wireframe.
 pub fn is_wireframe(text: &str) -> bool {
-    text.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("%%"))
-        .is_some_and(is_screen_header)
+    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%")).is_some_and(is_screen_header)
 }
 
 fn is_screen_header(line: &str) -> bool {

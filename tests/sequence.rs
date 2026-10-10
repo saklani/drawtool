@@ -143,3 +143,79 @@ fn long_labels_wrap_to_fit_the_budget() {
     assert!(wide.width > 60, "\n{}", wide.text);
     assert!(fitted.fits && fitted.width <= 60, "\n{}", fitted.text);
 }
+
+#[test]
+fn a_long_label_never_covers_a_lifeline_it_spans() {
+    let out = draw("sequenceDiagram\na->>b: hi\nb->>c: yo\na->>c: a much longer label that spans");
+    let row = out.lines().find(|l| l.contains("a much longer")).unwrap();
+    assert_eq!(row.matches('│').count(), 3, "a, b and c lifelines all visible:\n{out}");
+}
+
+#[test]
+fn box_groups_participants_without_drawing_a_frame() {
+    let src = "sequenceDiagram\nbox Purple Team\nparticipant a\nparticipant b\nend\na->>b: hi";
+    let seq = parse_sequence(src).unwrap();
+    let ids: Vec<&str> = seq.participants.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["a", "b"]);
+    assert_eq!(seq.items.len(), 1, "only the message: box is not a frame");
+    let out = render_sequence(&seq, false);
+    assert!(!out.contains('┄') && !out.contains("Purple"), "\n{out}");
+}
+
+#[test]
+fn rect_frames_drop_their_colour() {
+    let out = draw("sequenceDiagram\nrect rgb(0, 0, 255)\na->>b: x\nend");
+    assert!(out.contains("┌ rect ┄"), "\n{out}");
+    assert!(!out.contains("rgb"), "\n{out}");
+}
+
+#[test]
+fn par_critical_and_break_blocks() {
+    let src = "sequenceDiagram\npar fan out\na->>b: one\nand\na->>c: two\nend\ncritical commit\na->>b: write\noption timeout\na->>b: roll back\nend\nbreak on error\nb-->>a: stop\nend";
+    let out = draw(src);
+    for title in ["┌ par fan out", "├ and ", "┌ critical commit", "├ option timeout", "┌ break on error"] {
+        assert!(out.contains(title), "missing {title:?}:\n{out}");
+    }
+    assert_eq!(out.matches("└┄").count(), 3, "one bottom border per block:\n{out}");
+}
+
+#[test]
+fn note_over_non_adjacent_participants_spans_the_middle_one() {
+    let out = draw("sequenceDiagram\na->>b: x\nb->>c: y\nNote over a,c: shared note across three");
+    let note_top = out.lines().find(|l| l.contains("┌──") && !l.contains("┌───┐")).unwrap();
+    let (left, right) = (note_top.find('┌').unwrap(), note_top.rfind('┐').unwrap());
+    assert!(left <= col(&out, "│ a │") && note_top[..right].width() >= col(&out, "│ c │"), "\n{out}");
+}
+
+#[test]
+fn labels_keep_colons_and_drop_trailing_comments() {
+    let seq =
+        parse_sequence("sequenceDiagram\nparticipant a as Alice %% the user\na->>b: at 10:30 sharp %% why").unwrap();
+    assert_eq!(seq.participants[0].lines, ["Alice"]);
+    match &seq.items[0] {
+        Item::Message(m) => assert_eq!(m.lines, ["at 10:30 sharp"]),
+        other => panic!("expected a message, got {other:?}"),
+    }
+}
+
+#[test]
+fn errors_point_at_line_and_column() {
+    let at = |src: &str| {
+        let e = parse_sequence(src).unwrap_err();
+        (e.line, e.column)
+    };
+    assert_eq!(at("sequenceDiagram\n  nonsense here"), (Some(2), Some(3)));
+    assert_eq!(at("sequenceDiagram\nNote left of a, b: x"), (Some(2), Some(17)));
+    assert_eq!(at("sequenceDiagram\n    end"), (Some(2), Some(5)));
+    assert_eq!(at("sequenceDiagram\n  loop x\na->>b"), (Some(2), Some(3)));
+}
+
+#[test]
+fn hand_built_sequences_with_unbalanced_blocks_do_not_panic() {
+    let mut seq = parse_sequence("sequenceDiagram\na->>b: x").unwrap();
+    seq.items.push(Item::End);
+    seq.items.insert(0, Item::Start { kind: "loop".into(), text: "never closed".into() });
+    seq.items.insert(0, Item::End);
+    let out = render_sequence(&seq, false);
+    assert!(out.contains("│ a │"), "\n{out}");
+}

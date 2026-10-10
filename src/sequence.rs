@@ -105,7 +105,8 @@ pub fn is_sequence(text: &str) -> bool {
         .is_some_and(|l| l.eq_ignore_ascii_case("sequenceDiagram"))
 }
 
-fn label(text: Option<&str>) -> Vec<String> {
+/// Label text as lines; empty text means no label.
+fn text_lines(text: Option<&str>) -> Vec<String> {
     let lines = clean_label(text.unwrap_or(""));
     if lines.iter().all(String::is_empty) {
         Vec::new()
@@ -130,18 +131,22 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
         })
     };
     let mut items = Vec::new();
-    let mut open: Vec<(String, usize)> = Vec::new();
+    // Open blocks: kind, and where they start (for "never closed").
+    let mut open: Vec<(String, usize, usize)> = Vec::new();
     for (n, raw) in text.lines().enumerate() {
         let lineno = n + 1;
         let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
         let opt = |m: Option<regex::Match>| m.map_or("", |m| m.as_str()).trim().to_string();
+        // 1-based character column of byte offset `at` in `line`, in the original line.
+        let indent = raw[..raw.len() - raw.trim_start().len()].chars().count();
+        let col = |at: usize| indent + line[..at].chars().count() + 1;
         if line.is_empty() || line.starts_with("%%") || line.starts_with('#') || p.ignored.is_match(line) {
             continue;
         } else if let Some(c) = p.participant.captures(line) {
             let i = get(&c[2], &mut parts);
             parts[i].actor = c[1].eq_ignore_ascii_case("actor");
             if let Some(alias) = c.get(3) {
-                parts[i].lines = label(Some(alias.as_str()));
+                parts[i].lines = text_lines(Some(alias.as_str()));
             }
         } else if let Some(c) = p.note.captures(line) {
             let side = match c[1].to_lowercase().as_str() {
@@ -152,23 +157,33 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
             let a = get(&c[2], &mut parts);
             let z = c.get(3).map_or(a, |m| get(m.as_str(), &mut parts));
             if side != NoteSide::Over && a != z {
-                return Err(Error::at(lineno, "only `Note over` can span two participants"));
+                let at = c.get(3).map_or(0, |m| m.start());
+                return Err(Error::at_column(lineno, col(at), "only `Note over` can span two participants"));
             }
             items.push(Item::Note(Note {
                 side,
                 first: a.min(z),
                 last: a.max(z),
-                lines: label(c.get(4).map(|m| m.as_str())),
+                lines: text_lines(c.get(4).map(|m| m.as_str())),
             }));
         } else if line == "end" {
-            open.pop().ok_or_else(|| Error::at(lineno, "`end` without an open block"))?;
-            items.push(Item::End);
+            let (kind, _, _) =
+                open.pop().ok_or_else(|| Error::at_column(lineno, col(0), "`end` without an open block"))?;
+            if kind != "box" {
+                items.push(Item::End);
+            }
         } else if let Some(c) = p.start.captures(line) {
-            open.push((c[1].to_string(), lineno));
-            items.push(Item::Start { kind: c[1].to_string(), text: opt(c.get(2)) });
+            open.push((c[1].to_string(), lineno, col(0)));
+            // `box` only groups participant declarations (Mermaid colours them),
+            // and a `rect`'s text is just its colour: neither needs a title.
+            match &c[1] {
+                "box" => {}
+                "rect" => items.push(Item::Start { kind: c[1].to_string(), text: String::new() }),
+                kind => items.push(Item::Start { kind: kind.to_string(), text: opt(c.get(2)) }),
+            }
         } else if let Some(c) = p.divider.captures(line) {
             if open.is_empty() {
-                return Err(Error::at(lineno, format!("`{}` outside a block", &c[1])));
+                return Err(Error::at_column(lineno, col(0), format!("`{}` outside a block", &c[1])));
             }
             items.push(Item::Divider { kind: c[1].to_string(), text: opt(c.get(2)) });
         } else if let Some(c) = p.message.captures(line) {
@@ -178,14 +193,15 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
                 a if a.ends_with(">>") || a.ends_with(')') => Head::Arrow,
                 _ => Head::Open,
             };
-            let lines = label(c.get(4).map(|m| m.as_str()));
+            let lines = text_lines(c.get(4).map(|m| m.as_str()));
             items.push(Item::Message(Message { from, to, lines, dotted: arrow.starts_with("--"), head }));
         } else {
-            return Err(Error::at(lineno, format!("cannot parse {line:?} (expected a message like A->>B: text)")));
+            let message = format!("cannot parse {line:?} (expected a message like A->>B: text)");
+            return Err(Error::at_column(lineno, col(0), message));
         }
     }
-    if let Some((kind, lineno)) = open.pop() {
-        return Err(Error::at(lineno, format!("`{kind}` is never closed with `end`")));
+    if let Some((kind, lineno, column)) = open.pop() {
+        return Err(Error::at_column(lineno, column, format!("`{kind}` is never closed with `end`")));
     }
     Ok(Sequence { participants: parts, items })
 }
@@ -202,6 +218,21 @@ fn lines_width(lines: &[String]) -> i64 {
 fn halves(width: i64) -> (i64, i64) {
     let left = (width - 1) / 2;
     (left, width - 1 - left)
+}
+
+fn box_width(p: &Participant) -> i64 {
+    lines_width(&p.lines) + 4
+}
+
+/// Columns a message label needs between two neighbouring lifelines.
+fn label_room(m: &Message) -> i64 {
+    (lines_width(&m.lines) + 4).max(6)
+}
+
+/// Left lifeline of the first gap in `lo..hi` wide enough for a label that
+/// needs `room` columns (layout guarantees one exists; else the first gap).
+fn label_gap(x: &[i64], lo: usize, hi: usize, room: i64) -> usize {
+    (lo..hi).find(|&i| x[i + 1] - x[i] >= room).unwrap_or(lo)
 }
 
 fn note_width(n: &Note) -> i64 {
@@ -263,7 +294,7 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
                 }
             }
             Item::End => {
-                let (f, extent, title) = stack.pop().expect("parser balances blocks");
+                let Some((f, extent, title)) = stack.pop() else { continue };
                 let (lo, hi) = extent.unwrap_or((x[0], x[0]));
                 let (left, right) = (lo - 2, (hi + 2).max(lo - 2 + title + 3));
                 (out[f].left, out[f].right) = (left, right);
@@ -285,9 +316,13 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
 /// frame border clear of every lifeline.
 fn columns(seq: &Sequence) -> Vec<i64> {
     let n = seq.participants.len();
-    let boxw: Vec<i64> = seq.participants.iter().map(|p| lines_width(&p.lines) + 4).collect();
+    let boxw: Vec<i64> = seq.participants.iter().map(box_width).collect();
     let mut gap: Vec<i64> = (0..n.saturating_sub(1)).map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3).collect();
+    // Notes over several lifelines need their total span; a long message's
+    // label needs one gap it fits in, so it never covers a lifeline.
+    // (first lifeline, last lifeline, columns needed)
     let mut spans: Vec<(usize, usize, i64)> = Vec::new();
+    let mut labels: Vec<(usize, usize, i64)> = Vec::new();
     let mut need = |gap: &mut Vec<i64>, lo: usize, hi: usize, d: i64| match hi - lo {
         1 => gap[lo] = gap[lo].max(d),
         k if k > 1 => spans.push((lo, hi, d)),
@@ -298,8 +333,11 @@ fn columns(seq: &Sequence) -> Vec<i64> {
             Item::Message(m) if m.from == m.to && m.from + 1 < n => {
                 need(&mut gap, m.from, m.from + 1, self_reach(m) + 3)
             }
-            Item::Message(m) if m.from != m.to => {
-                need(&mut gap, m.from.min(m.to), m.from.max(m.to), (lines_width(&m.lines) + 4).max(6));
+            Item::Message(m) if m.from.abs_diff(m.to) == 1 => {
+                need(&mut gap, m.from.min(m.to), m.from.max(m.to), label_room(m));
+            }
+            Item::Message(m) if m.from != m.to && !m.lines.is_empty() => {
+                labels.push((m.from.min(m.to), m.from.max(m.to), label_room(m)));
             }
             Item::Note(note) => {
                 let (w, i, j) = (note_width(note), note.first, note.last);
@@ -331,6 +369,13 @@ fn columns(seq: &Sequence) -> Vec<i64> {
             }
         }
     }
+    for (lo, hi, room) in labels {
+        if gap[lo..hi].iter().all(|&g| g < room) {
+            // Widen the widest gap of the span: the least extra width.
+            let widest = (lo..hi).rev().max_by_key(|&i| gap[i]).unwrap_or(lo);
+            gap[widest] = room;
+        }
+    }
     let place = |gap: &[i64]| -> Vec<i64> { (0..n).map(|i| gap[..i].iter().sum()).collect() };
     // Push lifelines apart until no frame border sits on (or next to) one.
     for _ in 0..200 {
@@ -357,15 +402,82 @@ fn columns(seq: &Sequence) -> Vec<i64> {
     place(&gap)
 }
 
-/// A box `w` wide with centred lines; an `opaque` one hides lines under it.
-fn boxed(p: &mut Painter, (left, top): (i64, i64), w: i64, lines: &[String], round: bool, opaque: bool) {
-    let h = lines.len() as i64 + 2;
-    if opaque {
-        p.clear((left, top), (left + w - 1, top + h - 1));
-    }
-    p.rect((left, top), (w, h), Stroke::LIGHT, if round { Corners::Round } else { Corners::Square }, Layer::Main);
+/// A box `w` wide with centred lines.
+fn boxed(p: &mut Painter, (left, top): (i64, i64), w: i64, lines: &[String], corners: Corners) {
+    p.rect((left, top), (w, lines.len() as i64 + 2), Stroke::LIGHT, corners, Layer::Main);
     for (i, line) in lines.iter().enumerate() {
         p.text(left + 1 + (w - 2 - width(line)).div_euclid(2), top + 1 + i as i64, line);
+    }
+}
+
+/// The row each item starts on, and the row of the footer boxes.
+fn rows(seq: &Sequence, header: i64) -> (Vec<i64>, i64) {
+    let mut y = header + 1;
+    let rows = seq
+        .items
+        .iter()
+        .map(|item| {
+            let row = y;
+            y += match item {
+                Item::Message(m) => m.lines.len() as i64 + 1 + i64::from(m.from == m.to),
+                Item::Note(n) => n.lines.len() as i64 + 2,
+                _ => 1,
+            };
+            row
+        })
+        .collect();
+    (rows, y + 1)
+}
+
+/// Block frames, on the under layer so lifelines and messages run through.
+fn draw_frames(p: &mut Painter, seq: &Sequence, rows: &[i64], frames: &[Frame]) {
+    let (mut stack, mut next): (Vec<(usize, i64, usize)>, usize) = (Vec::new(), 0);
+    for (item, &row) in seq.items.iter().zip(rows) {
+        match item {
+            Item::Start { .. } => {
+                stack.push((next, row, p.net()));
+                next += 1;
+            }
+            Item::Divider { kind, text } => {
+                if let Some(&(f, _, net)) = stack.last() {
+                    let (l, r) = (frames[f].left, frames[f].right);
+                    p.line(&[(l, row), (r, row)], net, Stroke::DOTTED, Layer::Under);
+                    p.text(l + 1, row, &format!(" {} ", block_title(kind, text)));
+                }
+            }
+            Item::End => {
+                let Some((f, top, net)) = stack.pop() else { continue };
+                let Frame { title, left: l, right: r } = &frames[f];
+                p.line(&[(*l, top), (*r, top), (*r, row), (*l, row), (*l, top)], net, Stroke::DOTTED, Layer::Under);
+                p.text(l + 1, top, &format!(" {title} "));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A message's label and arrow, starting at `row`.
+fn draw_message(p: &mut Painter, m: &Message, row: i64, x: &[i64]) {
+    let (a, b, right) = (x[m.from], x[m.to], x[m.to] >= x[m.from]);
+    let (lo, hi) = (m.from.min(m.to), m.from.max(m.to));
+    let label_at = if m.from == m.to { a } else { x[label_gap(x, lo, hi, label_room(m))] };
+    for (k, line) in m.lines.iter().enumerate() {
+        p.text(label_at + 2, row + k as i64, line);
+    }
+    let r = row + m.lines.len() as i64;
+    let step = if right { 1 } else { -1 };
+    let (mut pts, tip) = if m.from == m.to {
+        (vec![(a, r), (a + 3, r), (a + 3, r + 1)], (a + 1, r + 1))
+    } else {
+        (vec![(a, r)], (b - step, r))
+    };
+    pts.push(if m.head == Head::Open { (if m.from == m.to { a } else { b }, tip.1) } else { tip });
+    let net = p.net();
+    p.line(&pts, net, Stroke::light(if m.dotted { Style::Dotted } else { Style::Solid }), Layer::Main);
+    match m.head {
+        Head::Arrow => p.symbol(tip.0, tip.1, if right && m.from != m.to { '►' } else { '◄' }),
+        Head::Cross => p.symbol(tip.0, tip.1, 'x'),
+        Head::Open => {}
     }
 }
 
@@ -376,90 +488,32 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
         return String::new();
     }
     let x = columns(seq);
-    let frame_list = frames(&seq.items, &x);
     let mut p = Painter::new(ascii);
-    let boxw: Vec<i64> = seq.participants.iter().map(|p| lines_width(&p.lines) + 4).collect();
+    let boxw: Vec<i64> = seq.participants.iter().map(box_width).collect();
     let boxh: Vec<i64> = seq.participants.iter().map(|p| p.lines.len() as i64 + 2).collect();
-
-    let mut rows = Vec::with_capacity(seq.items.len());
-    let mut y = boxh.iter().max().unwrap() + 1;
-    for item in &seq.items {
-        rows.push(y);
-        y += match item {
-            Item::Message(m) => m.lines.len() as i64 + 1 + i64::from(m.from == m.to),
-            Item::Note(n) => n.lines.len() as i64 + 2,
-            _ => 1,
-        };
-    }
-    let footer = y + 1;
+    let (rows, footer) = rows(seq, *boxh.iter().max().unwrap_or(&2));
     for (i, &xi) in x.iter().enumerate() {
         let net = p.net();
         p.line(&[(xi, boxh[i] - 1), (xi, footer)], net, Stroke::LIGHT, Layer::Main);
     }
-
-    // Frames sit under everything: lifelines and messages run through them.
-    let (mut stack, mut next): (Vec<(usize, i64, usize)>, usize) = (Vec::new(), 0);
-    for (item, &row) in seq.items.iter().zip(&rows) {
-        let dotted = |p: &mut Painter, net, pts: &[(i64, i64)]| p.line(pts, net, Stroke::DOTTED, Layer::Under);
-        match item {
-            Item::Start { .. } => {
-                stack.push((next, row, p.net()));
-                next += 1;
-            }
-            Item::Divider { kind, text } => {
-                if let Some(&(f, _, net)) = stack.last() {
-                    let (l, r) = (frame_list[f].left, frame_list[f].right);
-                    dotted(&mut p, net, &[(l, row), (r, row)]);
-                    p.text(l + 1, row, &format!(" {} ", block_title(kind, text)));
-                }
-            }
-            Item::End => {
-                let (f, top, net) = stack.pop().expect("parser balances blocks");
-                let Frame { title, left: l, right: r } = &frame_list[f];
-                dotted(&mut p, net, &[(*l, top), (*r, top), (*r, row), (*l, row), (*l, top)]);
-                p.text(l + 1, top, &format!(" {title} "));
-            }
-            _ => {}
-        }
-    }
-
+    draw_frames(&mut p, seq, &rows, &frames(&seq.items, &x));
     for (item, &row) in seq.items.iter().zip(&rows) {
         match item {
-            Item::Message(m) => {
-                let (a, b, right) = (x[m.from], x[m.to], x[m.to] >= x[m.from]);
-                let lo = if m.from == m.to { a } else { a.min(b) };
-                for (k, line) in m.lines.iter().enumerate() {
-                    p.text(lo + 2, row + k as i64, line);
-                }
-                let r = row + m.lines.len() as i64;
-                let (head, style) = (m.head, if m.dotted { Style::Dotted } else { Style::Solid });
-                let step = if right { 1 } else { -1 };
-                let (mut pts, tip) = if m.from == m.to {
-                    (vec![(a, r), (a + 3, r), (a + 3, r + 1)], (a + 1, r + 1))
-                } else {
-                    (vec![(a, r)], (b - step, r))
-                };
-                pts.push(if head == Head::Open { (if m.from == m.to { a } else { b }, tip.1) } else { tip });
-                let net = p.net();
-                p.line(&pts, net, Stroke::light(style), Layer::Main);
-                match head {
-                    Head::Arrow => p.symbol(tip.0, tip.1, if right && m.from != m.to { '►' } else { '◄' }),
-                    Head::Cross => p.symbol(tip.0, tip.1, 'x'),
-                    Head::Open => {}
-                }
-            }
+            Item::Message(m) => draw_message(&mut p, m, row, &x),
             Item::Note(n) => {
+                // Notes are opaque: lifelines and frames stop at their border.
                 let (lo, hi) = item_extent(item, &x).expect("notes have an extent");
-                boxed(&mut p, (lo, row), hi - lo + 1, &n.lines, false, true);
+                p.clear((lo, row), (hi, row + n.lines.len() as i64 + 1));
+                boxed(&mut p, (lo, row), hi - lo + 1, &n.lines, Corners::Square);
             }
             _ => {}
         }
     }
-
     for (i, part) in seq.participants.iter().enumerate() {
+        let corners = if part.actor { Corners::Round } else { Corners::Square };
         let left = x[i] - halves(boxw[i]).0;
-        boxed(&mut p, (left, 0), boxw[i], &part.lines, part.actor, false);
-        boxed(&mut p, (left, footer), boxw[i], &part.lines, part.actor, false);
+        boxed(&mut p, (left, 0), boxw[i], &part.lines, corners);
+        boxed(&mut p, (left, footer), boxw[i], &part.lines, corners);
     }
     p.finish()
 }

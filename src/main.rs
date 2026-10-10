@@ -1,4 +1,4 @@
-use drawtool::{parse, render_fit, Direction};
+use drawtool::{diff, highlight, marks::split_ids, parse, render_fit, Direction};
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -18,6 +18,10 @@ Options:
                          Too-wide diagrams get their labels wrapped; LR ones are
                          then broken into bands joined by numbered connectors.
                          The direction never changes on its own.
+      --highlight <IDS>  draw a path thick, e.g. --highlight req,auth,db
+                         (in a file: a line `%% highlight: req, auth, db`)
+      --diff <BEFORE>    show how BEFORE became FILE: + added (thick),
+                         - removed (dashed), ~ relabelled
   -h, --help             print help
   -V, --version          print version
 
@@ -55,11 +59,25 @@ fn default_width() -> usize {
     }
 }
 
+/// Read a diagram from `path`, or stdin when `None`.
+fn read_source(path: Option<&str>) -> Result<String, String> {
+    match path {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")),
+        None => {
+            let mut t = String::new();
+            std::io::stdin().read_to_string(&mut t).map_err(|e| format!("reading stdin: {e}"))?;
+            Ok(t)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let mut ascii = false;
     let mut direction = None;
     let mut file: Option<String> = None;
     let mut max_width = default_width();
+    let mut path: Option<Vec<String>> = None;
+    let mut before: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -95,35 +113,49 @@ fn main() -> ExitCode {
                 };
                 max_width = n;
             }
+            "--highlight" => {
+                let Some(v) = inline.or_else(|| args.next()) else {
+                    return fail("--highlight needs node ids, e.g. --highlight a,b,c");
+                };
+                path = Some(split_ids(&v));
+            }
+            "--diff" => {
+                let Some(v) = inline.or_else(|| args.next()) else {
+                    return fail("--diff needs the BEFORE file");
+                };
+                before = Some(v);
+            }
             "-" => file = None,
             f if f.starts_with('-') => return fail(&format!("unknown option {f} (see --help)")),
             _ => file = Some(arg),
         }
     }
 
-    let text = match &file {
-        Some(path) => match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => return fail(&format!("{path}: {e}")),
-        },
-        None => {
-            let mut t = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut t) {
-                return fail(&format!("reading stdin: {e}"));
-            }
-            t
-        }
+    let text = match read_source(file.as_deref()) {
+        Ok(t) => t,
+        Err(e) => return fail(&e),
     };
-    match parse(&text) {
-        Ok(graph) => {
-            let wanted = direction.unwrap_or(graph.direction);
-            let fitted = render_fit(&graph, wanted, ascii, max_width);
-            if !fitted.fits {
-                eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
-            }
-            println!("{}", fitted.text);
-            ExitCode::SUCCESS
-        }
-        Err(e) => fail(&e),
+    let mut graph = match parse(&text) {
+        Ok(g) => g,
+        Err(e) => return fail(&e),
+    };
+    if let Some(before) = before {
+        let old = match read_source(Some(&before)).and_then(|t| parse(&t).map_err(|e| format!("{before}: {e}"))) {
+            Ok(g) => g,
+            Err(e) => return fail(&e),
+        };
+        graph = diff(&old, &graph);
     }
+    if let Some(path) = path {
+        if let Err(e) = highlight(&mut graph, &path) {
+            return fail(&e);
+        }
+    }
+    let wanted = direction.unwrap_or(graph.direction);
+    let fitted = render_fit(&graph, wanted, ascii, max_width);
+    if !fitted.fits {
+        eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
+    }
+    println!("{}", fitted.text);
+    ExitCode::SUCCESS
 }

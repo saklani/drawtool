@@ -3,7 +3,7 @@
 //! break cycles -> layer -> dummy nodes -> crossing reduction -> placement
 //! (isotonic regression) -> ports -> channel track routing -> character grid.
 
-use crate::parse::{Direction, Graph, Shape, Style};
+use crate::parse::{Direction, Graph, Mark, Shape, Style};
 use std::collections::{HashMap, HashSet, VecDeque};
 use unicode_width::UnicodeWidthChar;
 
@@ -62,8 +62,16 @@ impl Glyphs {
         }
     }
 
-    /// Corners tl, tr, bl, br, then horizontal and vertical.
-    fn border(&self, shape: Shape) -> [char; 6] {
+    /// Corners tl, tr, bl, br, then horizontal and vertical. Highlighted and
+    /// added nodes get a heavy border, removed ones a dashed border.
+    fn border(&self, shape: Shape, mark: Mark) -> [char; 6] {
+        match (self.ascii, mark) {
+            (false, Mark::Highlight | Mark::Added) => return ['┏', '┓', '┗', '┛', '━', '┃'],
+            (false, Mark::Removed) => return ['┌', '┐', '└', '┘', '┄', '┆'],
+            (true, Mark::Highlight | Mark::Added) => return ['#', '#', '#', '#', '=', '#'],
+            (true, Mark::Removed) => return ['+', '+', '+', '+', '.', ':'],
+            _ => {}
+        }
         match (self.ascii, shape) {
             (false, Shape::Box) => ['┌', '┐', '└', '┘', '─', '│'],
             (false, Shape::Round) => ['╭', '╮', '╰', '╯', '─', '│'],
@@ -75,9 +83,11 @@ impl Glyphs {
     }
 
     /// Tees where an edge leaves a border: top, bottom, left, right.
-    fn tee(&self, shape: Shape) -> [char; 4] {
+    fn tee(&self, shape: Shape, mark: Mark) -> [char; 4] {
         match (self.ascii, shape) {
             (true, _) => ['+'; 4],
+            (false, _) if matches!(mark, Mark::Highlight | Mark::Added) => ['┷', '┯', '┨', '┠'],
+            (false, _) if mark == Mark::Removed => ['┴', '┬', '┤', '├'],
             (false, Shape::Decision) => ['╧', '╤', '╢', '╟'],
             (false, _) => ['┴', '┬', '┤', '├'],
         }
@@ -115,6 +125,7 @@ enum Kind {
 struct LNode {
     lines: Vec<String>,
     shape: Shape,
+    mark: Mark,
     kind: Kind,
     pos: i64,   // cross-axis coordinate (left / top edge)
     csize: i64, // size across the flow
@@ -123,7 +134,7 @@ struct LNode {
 
 impl LNode {
     fn new(lines: Vec<String>, shape: Shape, kind: Kind) -> Self {
-        LNode { lines, shape, kind, pos: 0, csize: 0, lsize: 0 }
+        LNode { lines, shape, mark: Mark::None, kind, pos: 0, csize: 0, lsize: 0 }
     }
 
     fn cen(&self) -> i64 {
@@ -244,7 +255,7 @@ fn crossings(layers: &[Vec<usize>], down: &[Vec<usize>]) -> usize {
 /// Break cycles, turn edge labels into nodes, and assign each node a layer.
 fn layer_graph(graph: &Graph, gl: &Glyphs) -> (Vec<LNode>, Vec<Edge>, Vec<Vec<usize>>, Vec<i64>) {
     let mut ln: Vec<LNode> =
-        graph.nodes.iter().map(|n| LNode::new(n.lines.clone(), n.shape, Kind::Real)).collect();
+        graph.nodes.iter().map(|n| LNode { mark: n.mark, ..LNode::new(n.lines.clone(), n.shape, Kind::Real) }).collect();
     let nreal = ln.len();
     let mut looped = vec![false; nreal];
     for e in &graph.edges {
@@ -334,24 +345,37 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
 
     let (mut ln, mut edges, chains, mut layer) = layer_graph(graph, &gl);
 
-    // Dummy nodes for segments spanning several layers.
+    // Dummy nodes for segments spanning several layers. Long edges of the same
+    // style into the same node share their dummies, so they merge into one
+    // line as early as possible instead of each taking its own route.
     let mut up: Vec<Vec<usize>> = vec![Vec::new(); ln.len()];
     let mut down: Vec<Vec<usize>> = vec![Vec::new(); ln.len()];
+    let mut shared: HashMap<(usize, i64, Style), usize> = HashMap::new();
     for (e, chain) in edges.iter_mut().zip(&chains) {
         let mut path = vec![chain[0]];
         for w in chain.windows(2) {
+            let bundle = !e.rev && ln[w[1]].kind == Kind::Real;
             for k in layer[w[0]] + 1..layer[w[1]] {
-                ln.push(LNode::new(Vec::new(), Shape::Box, Kind::Dummy));
-                layer.push(k);
-                up.push(Vec::new());
-                down.push(Vec::new());
-                path.push(ln.len() - 1);
+                let existing = if bundle { shared.get(&(w[1], k, e.style)).copied() } else { None };
+                let d = existing.unwrap_or_else(|| {
+                    ln.push(LNode::new(Vec::new(), Shape::Box, Kind::Dummy));
+                    layer.push(k);
+                    up.push(Vec::new());
+                    down.push(Vec::new());
+                    ln.len() - 1
+                });
+                if bundle {
+                    shared.insert((w[1], k, e.style), d);
+                }
+                path.push(d);
             }
             path.push(w[1]);
         }
         for w in path.windows(2) {
-            down[w[0]].push(w[1]);
-            up[w[1]].push(w[0]);
+            if !down[w[0]].contains(&w[1]) {
+                down[w[0]].push(w[1]);
+                up[w[1]].push(w[0]);
+            }
         }
         e.path = path;
     }
@@ -691,7 +715,10 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
             match entry.iter_mut().find(|e| e.0 == net) {
                 Some(e) => {
                     e.1 |= bits;
-                    e.2 = st;
+                    // A trunk shared by edges of different styles belongs to none of them.
+                    if e.2 != st {
+                        e.2 = Style::Solid;
+                    }
                 }
                 None => entry.push((net, bits, st)),
             }
@@ -713,7 +740,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
             Kind::Real => {
                 let (x, y) = phys(l0, nd.pos);
                 let (w, h) = if td { (nd.csize, nd.lsize) } else { (nd.lsize, nd.csize) };
-                let [tl, tr, bl, br, hz, vt] = gl.border(nd.shape);
+                let [tl, tr, bl, br, hz, vt] = gl.border(nd.shape, nd.mark);
                 let hline: String = std::iter::repeat(hz).take((w - 2) as usize).collect();
                 put_text(&mut glyph, x, y, &format!("{tl}{hline}{tr}"));
                 put_text(&mut glyph, x, y + h - 1, &format!("{bl}{hline}{br}"));
@@ -792,7 +819,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         if nd.kind != Kind::Real {
             continue;
         }
-        let tees = gl.tee(nd.shape);
+        let tees = gl.tee(nd.shape, nd.mark);
         let (border, outside, tee, arrows) = match side {
             Side::Out => (out_l(n), out_l(n) + 1, tees[if td { 1 } else { 3 }], &arrow_out),
             Side::In => (in_l(n), in_l(n) - 1, tees[if td { 0 } else { 2 }], &arrow_in),

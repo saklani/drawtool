@@ -1,0 +1,7 @@
+flowchart LR
+%% highlight: req, auth, hit, db, ok
+req[GET /users/:id] --> auth{token ok?}
+auth -->|no| err[401]
+auth -->|yes| hit{cached?}
+hit -->|yes| ok[200 OK]
+hit -->|no| db[(postgres)] -->|row| ok

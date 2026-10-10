@@ -17,11 +17,22 @@ pub enum Shape {
     Decision,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Style {
     Solid,
     Dotted,
     Thick,
+}
+
+/// How a node is emphasised: by `--highlight`, or by `--diff`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Mark {
+    #[default]
+    None,
+    Highlight,
+    Added,
+    Removed,
+    Changed,
 }
 
 #[derive(Clone, Debug)]
@@ -29,12 +40,13 @@ pub struct NodeDef {
     pub id: String,
     pub lines: Vec<String>,
     pub shape: Shape,
+    pub mark: Mark,
     explicit: bool,
 }
 
 impl NodeDef {
     pub fn new(id: &str, lines: Vec<String>, shape: Shape) -> Self {
-        NodeDef { id: id.to_string(), lines, shape, explicit: true }
+        NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, explicit: true }
     }
 }
 
@@ -161,7 +173,13 @@ impl Parser {
         let idx = match self.index.get(&id) {
             Some(&i) => i,
             None => {
-                self.nodes.push(NodeDef { id: id.clone(), lines: vec![id.clone()], shape: Shape::Box, explicit: false });
+                self.nodes.push(NodeDef {
+                    id: id.clone(),
+                    lines: vec![id.clone()],
+                    shape: Shape::Box,
+                    mark: Mark::None,
+                    explicit: false,
+                });
                 self.index.insert(id.clone(), self.nodes.len() - 1);
                 self.nodes.len() - 1
             }
@@ -233,8 +251,13 @@ pub fn parse(text: &str) -> Result<Graph, String> {
     let pats = patterns();
     let mut direction = Direction::LR;
     let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new() };
+    let mut highlight: Option<(usize, Vec<String>)> = None;
     for (lineno, raw) in text.lines().enumerate() {
         let line = raw.trim().trim_end_matches(';').trim();
+        if let Some(ids) = line.strip_prefix("%%").map(str::trim).and_then(|c| c.strip_prefix("highlight:")) {
+            highlight = Some((lineno + 1, crate::marks::split_ids(ids)));
+            continue;
+        }
         if line.is_empty() || line.starts_with("%%") || line.starts_with('#') {
             continue;
         }
@@ -248,5 +271,9 @@ pub fn parse(text: &str) -> Result<Graph, String> {
         }
         p.statement(line).map_err(|e| format!("line {}: {}", lineno + 1, e))?;
     }
-    Ok(Graph { direction, nodes: p.nodes, edges: p.edges })
+    let mut graph = Graph { direction, nodes: p.nodes, edges: p.edges };
+    if let Some((lineno, ids)) = highlight {
+        crate::marks::highlight(&mut graph, &ids).map_err(|e| format!("line {lineno}: {e}"))?;
+    }
+    Ok(graph)
 }

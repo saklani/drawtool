@@ -88,3 +88,39 @@ fn several_crossing_edges_keep_connectors() {
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 20);
     assert!(fitted.text.contains('①'), "\n{}", fitted.text);
 }
+
+#[test]
+fn highlight_marks_nodes_and_thickens_edges() {
+    let g = parse("flowchart LR\n%% highlight: a, b\na --> b --> c").unwrap();
+    assert_eq!(g.nodes[0].mark, drawtool::Mark::Highlight);
+    assert_eq!(g.nodes[2].mark, drawtool::Mark::None);
+    assert_eq!(g.edges[0].style, drawtool::parse::Style::Thick);
+    assert_eq!(g.edges[1].style, drawtool::parse::Style::Solid);
+    let out = render(&g, None, false);
+    assert!(out.contains('┏') && out.contains("━►"), "\n{out}");
+}
+
+#[test]
+fn highlight_rejects_unknown_nodes_and_missing_edges() {
+    let err = parse("a --> b\n%% highlight: a, zz").unwrap_err();
+    assert!(err.starts_with("line 2:") && err.contains("zz"), "{err}");
+    let mut g = parse("a --> b --> c").unwrap();
+    assert!(drawtool::highlight(&mut g, &["a".into(), "c".into()]).unwrap_err().contains("no edge"));
+}
+
+#[test]
+fn diff_marks_added_removed_and_changed() {
+    let before = parse("a[A] --> b[B] --> c[C]").unwrap();
+    let after = parse("a[A] --> b[B two] --> d[D]").unwrap();
+    let g = drawtool::diff(&before, &after);
+    let mark = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap().mark;
+    assert_eq!(mark("a"), drawtool::Mark::None);
+    assert_eq!(mark("b"), drawtool::Mark::Changed);
+    assert_eq!(mark("d"), drawtool::Mark::Added);
+    assert_eq!(mark("c"), drawtool::Mark::Removed);
+    let styles: Vec<_> = g.edges.iter().map(|e| e.style).collect();
+    use drawtool::parse::Style::*;
+    assert_eq!(styles, vec![Solid, Thick, Dotted]);
+    let out = render(&g, None, false);
+    assert!(out.contains("+ D") && out.contains("- C") && out.contains("~ B two"), "\n{out}");
+}

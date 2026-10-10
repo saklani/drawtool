@@ -4,6 +4,10 @@
 //! placement (isotonic regression) → ports → back-edge lanes → channel tracks
 //! → paint.
 //!
+//! The stages are grouped into phases, and a `Layout<Phase>` offers only the
+//! stages of its phase and the step to the next, so they can't run out of
+//! order: `Layout::new(..).order().place().route().paint(..)`.
+//!
 //! Coordinates are abstract: `l` runs along the flow (layers) and `c` across
 //! it; `phys` maps them to x/y, so TD and LR share every line of layout.
 //!
@@ -22,6 +26,7 @@ use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction::{Incoming, Outgoing};
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 /// Gap plus dashed line between a group's members and its frame.
 const FRAME: i64 = 2;
@@ -294,8 +299,22 @@ pub fn node_layers(graph: &Graph) -> Vec<usize> {
     layer_graph(graph).0.iter().take(graph.nodes.len()).map(|n| n.layer).collect()
 }
 
+// Phases of a `Layout`, named for what has been decided so far.
+/// Layers, with dummy nodes on long edges.
 #[derive(Default)]
-struct Layout {
+struct Layered;
+/// The order of the nodes within each layer, and the lanes.
+#[derive(Default)]
+struct Ordered;
+/// Edge segments, box sizes, and positions across the flow.
+#[derive(Default)]
+struct Placed;
+/// Every segment's route: ports, back-edge lanes and channel tracks.
+#[derive(Default)]
+struct Routed;
+
+#[derive(Default)]
+struct Layout<Phase> {
     /// Subgraph titles.
     titles: Vec<String>,
     td: bool,
@@ -315,6 +334,7 @@ struct Layout {
     /// Per layer: where its band starts, and the first track of the channel after it.
     bstart: Vec<i64>,
     tstart: Vec<i64>,
+    phase: PhantomData<Phase>,
 }
 
 /// Render a parsed graph as text. `direction` overrides the graph's own.
@@ -323,33 +343,42 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
     if graph.nodes.is_empty() {
         return String::new();
     }
-    let mut l = Layout::new(graph, direction.unwrap_or(graph.direction) == Direction::TD);
-    l.dummies();
-    l.order();
-    l.segments();
-    l.sizes();
-    l.place();
-    l.ports();
-    l.back_lanes();
-    l.tracks();
-    l.coordinates();
-    l.paint(ascii)
+    let td = direction.unwrap_or(graph.direction) == Direction::TD;
+    Layout::new(graph, td).order().place().route().paint(ascii)
 }
 
-impl Layout {
+impl<P> Layout<P> {
+    /// The same layout, in the next phase.
+    fn to<Next>(self) -> Layout<Next> {
+        Layout {
+            titles: self.titles,
+            td: self.td,
+            gap: self.gap,
+            nodes: self.nodes,
+            edges: self.edges,
+            layers: self.layers,
+            lanes: self.lanes,
+            rank: self.rank,
+            segs: self.segs,
+            groups: self.groups,
+            port: self.port,
+            backs: self.backs,
+            bstart: self.bstart,
+            tstart: self.tstart,
+            phase: PhantomData,
+        }
+    }
+}
+
+impl Layout<Layered> {
     fn new(graph: &Graph, td: bool) -> Self {
         let (mut nodes, edges) = layer_graph(graph);
         let layers = vec![vec![]; make_room_for_back_edges(&mut nodes, &edges)];
         let titles = graph.groups.iter().map(|g| g.title.clone()).collect();
         let gap = if td { 3 } else { 1 };
-        Layout { titles, td, gap, nodes, edges, layers, ..Default::default() }
-    }
-
-    /// Space after `a` in its layer: wider between two TD edge labels, so
-    /// side-by-side labels don't read as one phrase.
-    fn space(&self, a: usize, b: Option<&usize>) -> i64 {
-        let labels = |v: usize| self.nodes[v].kind == Kind::Label;
-        self.gap + if self.td && labels(a) && b.is_some_and(|&b| labels(b)) { 3 } else { 0 }
+        let mut l = Layout { titles, td, gap, nodes, edges, layers, ..Default::default() };
+        l.dummies();
+        l
     }
 
     /// Dummy nodes for edges spanning several layers. Long edges of the same
@@ -396,7 +425,7 @@ impl Layout {
     /// Lanes, then barycenter sweeps (keeping the ordering with fewest
     /// crossings). Every subgraph is a lane: a strip across the flow only its
     /// members occupy, so its frame can never enclose a stranger.
-    fn order(&mut self) {
+    fn order(mut self) -> Layout<Ordered> {
         for n in self.nodes.iter().filter(|n| n.kind == Kind::Real) {
             match self.lanes.iter_mut().find(|l| l.0 == n.lane) {
                 Some(l) => (l.1, l.2) = (l.1.min(n.layer), l.2.max(n.layer)),
@@ -439,6 +468,7 @@ impl Layout {
             }
         }
         self.layers = best;
+        self.to()
     }
 
     /// Each node's index within its layer.
@@ -475,6 +505,23 @@ impl Layout {
                 }
             }
         }
+    }
+}
+
+impl Layout<Ordered> {
+    /// Segments first: a box's size depends on its ports.
+    fn place(mut self) -> Layout<Placed> {
+        self.segments();
+        self.sizes();
+        self.position();
+        self.to()
+    }
+
+    /// Space after `a` in its layer: wider between two TD edge labels, so
+    /// side-by-side labels don't read as one phrase.
+    fn space(&self, a: usize, b: Option<&usize>) -> i64 {
+        let labels = |v: usize| self.nodes[v].kind == Kind::Label;
+        self.gap + if self.td && labels(a) && b.is_some_and(|&b| labels(b)) { 3 } else { 0 }
     }
 
     /// One segment per layer gap. A back edge becomes two: out of its source
@@ -529,7 +576,7 @@ impl Layout {
 
     /// Pull nodes toward their neighbours while keeping order and spacing,
     /// then push lanes apart so frames have room.
-    fn place(&mut self) {
+    fn position(&mut self) {
         self.pack();
         let sweep = |l: &mut Self, k: usize, up: bool| {
             let (mut ys, mut ws, mut offs, mut c) = (vec![], vec![], vec![], 0i64);
@@ -593,6 +640,15 @@ impl Layout {
             }
         }
     }
+}
+
+impl Layout<Placed> {
+    fn route(mut self) -> Layout<Routed> {
+        self.ports();
+        self.back_lanes();
+        self.tracks();
+        self.to()
+    }
 
     /// Port positions: the first style at the centre, others beside it on
     /// the side facing where their edges go (back edges: the outer lane).
@@ -632,13 +688,23 @@ impl Layout {
 
     // ---- Back edges ---------------------------------------------------------
 
+    /// Every node's cross-axis extent, frames included.
+    fn extent(&self) -> (i64, i64) {
+        let lo = self.nodes.iter().map(|n| n.framed().0).min().unwrap_or(0);
+        (lo, self.nodes.iter().map(|n| n.framed().1).max().unwrap_or(0))
+    }
+
+    /// Whether a back edge's lane goes on the low side (before every node):
+    /// the side nearer the middle of its ends.
+    fn low_side(&self, edge: usize) -> bool {
+        let (e, (lo, hi)) = (&self.edges[edge], self.extent());
+        self.nodes[e.src].cen() + self.nodes[e.dst].cen() < lo + hi
+    }
+
     /// A cross-axis point far out on the side a back edge's lane will use,
     /// for choosing which side of a box its ports go on.
     fn lane_hint(&self, edge: usize) -> i64 {
-        let e = &self.edges[edge];
-        let (src, dst) = (self.nodes[e.src].cen(), self.nodes[e.dst].cen());
-        let (lo, hi) = self.nodes.iter().fold((i64::MAX, i64::MIN), |(a, b), n| (a.min(n.pos), b.max(n.pos + n.csize)));
-        if src + dst < lo + hi {
+        if self.low_side(edge) {
             -(1 << 30)
         } else {
             1 << 30
@@ -648,17 +714,15 @@ impl Layout {
     /// Outer lanes for back edges, beyond every node and frame on the side
     /// nearer the edge's ends; shorter edges run inside longer ones.
     fn back_lanes(&mut self) {
-        let lo = self.nodes.iter().map(|n| n.framed().0).min().unwrap_or(0) - 2;
-        let hi = self.nodes.iter().map(|n| n.framed().1).max().unwrap_or(0) + 2;
-        let (mut near, mut far) = (lo, hi);
+        let (lo, hi) = self.extent();
+        let (mut near, mut far) = (lo - 2, hi + 2);
         let mut order: Vec<usize> = (0..self.backs.len()).collect();
         order.sort_by_key(|&b| {
             let e = &self.edges[self.backs[b].edge];
             self.nodes[e.src].layer - self.nodes[e.dst].layer
         });
         for b in order {
-            let e = &self.edges[self.backs[b].edge];
-            let low = self.nodes[e.src].cen() + self.nodes[e.dst].cen() < lo + hi;
+            let (e, low) = (&self.edges[self.backs[b].edge], self.low_side(self.backs[b].edge));
             // In TD the label sits beside the (vertical) lane, so leave room.
             let label = e.label.as_ref().map_or(0, |l| width(&l.join(" ")) + 1);
             let step = 2 + if self.td { label } else { 0 };
@@ -734,7 +798,9 @@ impl Layout {
             s.track = t.map_or(s.track, |t| t as i64);
         }
     }
+}
 
+impl Layout<Routed> {
     /// The real-node layer span of each framed lane.
     fn frames(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
         self.lanes.iter().copied().filter(|l| l.0 > 0)
@@ -769,7 +835,8 @@ impl Layout {
         }
     }
 
-    fn paint(&self, ascii: bool) -> String {
+    fn paint(mut self, ascii: bool) -> String {
+        self.coordinates();
         let mut p = Painter::new(ascii);
         p.mark_crossings = true;
         let in_l = |n: usize| self.bstart[self.nodes[n].layer];
@@ -973,8 +1040,7 @@ mod tests {
     #[test]
     fn long_edges_into_one_node_share_dummies_by_style() {
         let g = graph("a --> b\nb --> c\nc --> d\na --> d\nz --> b\nz --> d\nz -.-> d");
-        let mut l = Layout::new(&g, true);
-        l.dummies();
+        let l = Layout::new(&g, true);
         let inner = |e: &Edge| e.path[1..e.path.len() - 1].to_vec();
         let (a_d, z_d, z_dotted) = (&l.edges[3], &l.edges[5], &l.edges[6]);
         assert_eq!(inner(a_d).len(), 2);
@@ -988,7 +1054,6 @@ mod tests {
         let g = graph("a --> c\nb --> d");
         let (a, b, c, d) = (id(&g, "a"), id(&g, "b"), id(&g, "c"), id(&g, "d"));
         let mut l = Layout::new(&g, true);
-        l.dummies();
         l.rank = vec![0; l.nodes.len()];
         l.layers = vec![vec![a, b], vec![d, c]];
         assert_eq!(crossings(&l.layers, &l.nodes), 1);
@@ -1001,7 +1066,6 @@ mod tests {
         // Each of a's two edges crosses each of b's: four crossings.
         let g = graph("a --> d\na --> e\nb --> c\nb --> f");
         let mut l = Layout::new(&g, true);
-        l.dummies();
         let n = |s| id(&g, s);
         l.layers = vec![vec![n("a"), n("b")], vec![n("c"), n("f"), n("d"), n("e")]];
         assert_eq!(crossings(&l.layers, &l.nodes), 4);
@@ -1020,7 +1084,7 @@ mod tests {
     fn tracks_put_the_crossing_free_order_first() {
         // By span, `a` (0..10) comes first, but if it took the upper track its
         // way down (at 10) would cross b's track and b's way up (at 5) a's.
-        let mut l = Layout { layers: vec![vec![], vec![]], ..Default::default() };
+        let mut l: Layout<Placed> = Layout { layers: vec![vec![], vec![]], ..Default::default() };
         let key = |n, side| (n, side, Style::Solid);
         l.segs.push(seg(key(0, Side::Out), key(1, Side::In), 0, 10));
         l.segs.push(seg(key(2, Side::Out), key(3, Side::In), 5, 20));
@@ -1032,7 +1096,8 @@ mod tests {
     fn ports_put_the_straightest_style_at_the_centre() {
         // `a` (centre 5) has a dotted edge to far-off `c`, listed first, and a
         // solid one to `b` straight below.
-        let mut l = Layout { nodes: vec![node(0, 11, 0), node(0, 11, 1), node(40, 11, 1)], ..Default::default() };
+        let mut l: Layout<Placed> =
+            Layout { nodes: vec![node(0, 11, 0), node(0, 11, 1), node(40, 11, 1)], ..Default::default() };
         l.groups.insert((0, Side::Out), vec![Style::Dotted, Style::Solid]);
         l.segs.push(seg((0, Side::Out, Style::Dotted), (2, Side::In, Style::Dotted), 0, 0));
         l.segs.push(seg((0, Side::Out, Style::Solid), (1, Side::In, Style::Solid), 0, 0));
@@ -1046,8 +1111,9 @@ mod tests {
         // Two cycles, one at each end of the cross axis (0..55).
         let nodes = vec![node(0, 5, 1), node(0, 5, 2), node(50, 5, 1), node(50, 5, 2)];
         let edges = vec![edge(1, 0, Style::Solid, true), edge(3, 2, Style::Solid, true)];
-        let mut l = Layout { nodes, edges, ..Default::default() };
+        let mut l: Layout<Ordered> = Layout { nodes, edges, ..Default::default() };
         l.segments();
+        let mut l: Layout<Placed> = l.to();
         l.back_lanes();
         let lanes: Vec<i64> = l.backs.iter().map(|b| b.lane).collect();
         assert_eq!(lanes, [-2, 56]);

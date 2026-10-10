@@ -84,6 +84,9 @@ pub struct Painter {
     lines: [HashMap<Pt, Vec<Arm>>; 2],
     round: HashSet<Pt>,
     nets: usize,
+    /// Corners of the area pasted in, which stays the canvas even where
+    /// its edges have since been erased.
+    extent: Option<(Pt, Pt)>,
 }
 
 impl Painter {
@@ -152,6 +155,67 @@ impl Painter {
         for layer in &mut self.lines {
             layer.retain(|&(x, y), _| x < x0 || x > x1 || y < y0 || y > y1);
         }
+    }
+
+    /// Erase lines, text and symbols in a rectangle.
+    pub fn erase(&mut self, (x0, y0): Pt, (x1, y1): Pt) {
+        self.remap(|(x, y)| (x < x0 || x > x1 || y < y0 || y > y1).then_some((x, y)));
+    }
+
+    /// Remove columns `lo..=hi`, moving everything right of them left to close the gap.
+    pub fn remove_columns(&mut self, lo: i64, hi: i64) {
+        self.remap(|(x, y)| match x {
+            x if x < lo => Some((x, y)),
+            x if x > hi => Some((x - (hi - lo + 1), y)),
+            _ => None,
+        });
+    }
+
+    /// Move every cell to `to(cell)`, dropping the ones it maps to `None`.
+    fn remap(&mut self, to: impl Fn(Pt) -> Option<Pt>) {
+        self.glyphs = self.glyphs.drain().filter_map(|(pt, g)| Some((to(pt)?, g))).collect();
+        for layer in &mut self.lines {
+            *layer = layer.drain().filter_map(|(pt, arms)| Some((to(pt)?, arms))).collect();
+        }
+        self.round = self.round.drain().filter_map(&to).collect();
+    }
+
+    /// Draw everything `other` holds here, moved by (`dx`, `dy`). Its nets
+    /// stay its own: they never join ours.
+    pub fn paste(&mut self, other: &Painter, (dx, dy): Pt) {
+        let at = |(x, y): Pt| (x + dx, y + dy);
+        let first = self.nets;
+        self.glyphs.extend(other.glyphs.iter().map(|(&pt, &g)| (at(pt), g)));
+        for (mine, theirs) in self.lines.iter_mut().zip(&other.lines) {
+            for (&pt, arms) in theirs {
+                mine.entry(at(pt)).or_default().extend(arms.iter().map(|&a| Arm { net: first + a.net, ..a }));
+            }
+        }
+        self.round.extend(other.round.iter().map(|&pt| at(pt)));
+        self.nets += other.nets;
+        if let Some((lo, hi)) = other.bounds() {
+            let (lo, hi) = (at(lo), at(hi));
+            let (a, b) = self.extent.unwrap_or((lo, hi));
+            self.extent = Some(((a.0.min(lo.0), a.1.min(lo.1)), (b.0.max(hi.0), b.1.max(hi.1))));
+        }
+    }
+
+    /// Top-left and bottom-right of everything drawn (and pasted).
+    #[must_use]
+    pub fn bounds(&self) -> Option<(Pt, Pt)> {
+        let cells = self.glyphs.keys().chain(self.lines.iter().flat_map(HashMap::keys));
+        let corners = self.extent.iter().flat_map(|(lo, hi)| [lo, hi]);
+        let (xs, ys): (Vec<i64>, Vec<i64>) = cells.chain(corners).copied().unzip();
+        Some(((*xs.iter().min()?, *ys.iter().min()?), (*xs.iter().max()?, *ys.iter().max()?)))
+    }
+
+    /// The character a cell shows: text or symbol, else main line, else under.
+    #[must_use]
+    pub fn cell(&self, pt: Pt) -> char {
+        if let Some(&(ch, symbol)) = self.glyphs.get(&pt) {
+            return if symbol && self.ascii { Self::ascii_symbol(ch) } else { ch };
+        }
+        self.lines.iter().find_map(|layer| layer.get(&pt)).map_or(' ', |arms| self.resolve(pt, arms))
     }
 
     /// No text, symbol or main line in this cell.
@@ -259,26 +323,9 @@ impl Painter {
     /// coordinates used).
     #[must_use]
     pub fn finish(&self) -> String {
-        let mut out: HashMap<Pt, char> = HashMap::new();
-        for layer in self.lines.iter().rev() {
-            for (&cell, arms) in layer {
-                out.insert(cell, self.resolve(cell, arms));
-            }
-        }
-        for (&cell, &(ch, symbol)) in &self.glyphs {
-            out.insert(cell, if symbol && self.ascii { Self::ascii_symbol(ch) } else { ch });
-        }
-        let Some(x0) = out.keys().map(|c| c.0).min() else { return String::new() };
-        let y0 = out.keys().map(|c| c.1).min().unwrap_or(0);
-        let x1 = out.keys().map(|c| c.0).max().unwrap_or(0);
-        let y1 = out.keys().map(|c| c.1).max().unwrap_or(0);
-        let mut rows = vec![vec![' '; (x1 - x0 + 1) as usize]; (y1 - y0 + 1) as usize];
-        for (&(x, y), &ch) in &out {
-            rows[(y - y0) as usize][(x - x0) as usize] = ch;
-        }
-        let lines: Vec<String> =
-            rows.iter().map(|r| r.iter().filter(|&&c| c != WIDE).collect::<String>().trim_end().to_string()).collect();
-        lines.join("\n")
+        let Some(((x0, y0), (x1, y1))) = self.bounds() else { return String::new() };
+        let row = |y| (x0..=x1).map(|x| self.cell((x, y))).filter(|&c| c != WIDE).collect::<String>();
+        (y0..=y1).map(|y| row(y).trim_end().to_string()).collect::<Vec<_>>().join("\n")
     }
 }
 
@@ -364,6 +411,30 @@ mod tests {
             p.text(2, 0, "x");
         });
         assert_eq!(out, "─ x ─");
+    }
+
+    #[test]
+    fn pasted_lines_keep_their_nets_and_size() {
+        let out = painted(false, |p| {
+            let mut other = Painter::new(false);
+            let net = other.net();
+            other.line(&[(1, 0), (1, 2)], net, Stroke::LIGHT, Layer::Main);
+            other.text(0, 3, "ab");
+            let net = p.net();
+            p.line(&[(0, 1), (2, 1)], net, Stroke::LIGHT, Layer::Main);
+            p.paste(&other, (0, 0));
+            p.erase((0, 3), (1, 3));
+        });
+        assert_eq!(out, " │\n─│─\n │\n", "a crossing, not a join; the erased row stays");
+    }
+
+    #[test]
+    fn removed_columns_close_the_gap() {
+        let out = painted(false, |p| {
+            p.text(0, 0, "a..b");
+            p.remove_columns(1, 2);
+        });
+        assert_eq!(out, "ab");
     }
 
     #[test]

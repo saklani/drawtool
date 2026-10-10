@@ -4,7 +4,7 @@
 //! connectors (①). TD only ever wraps labels.
 
 use crate::layout::{draw, scene, structure, Scene, Structure};
-use crate::model::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
+use crate::model::{Arrow, Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::paint::{Layer, Painter, Pt, Stroke};
 use crate::text::{block_width, first_fit, wrap, Fit};
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -86,7 +86,7 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
         index.insert(v.index(), g.add_node(graph.g[v].clone()));
     }
     for (c, t) in entered {
-        g.add_edge(c, index[&t], EdgeDef { label: None, style: Style::Solid, arrow: true });
+        g.add_edge(c, index[&t], EdgeDef { label: None, style: Style::Solid, arrow: Arrow::End });
     }
     for e in graph.g.edge_references().filter(|e| band_of[e.source().index()] == b) {
         let t = e.target().index();

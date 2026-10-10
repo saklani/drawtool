@@ -249,3 +249,22 @@ fn stacks_run_across_in_td_and_skip_with_a_bracket() {
     let out = render(&parse("flowchart LR\nx --> a & b & c\na --> c\n%% stack: a b c").unwrap(), None, false);
     assert!(out.contains('◄'), "\n{out}");
 }
+
+#[test]
+fn two_headed_edges_get_a_head_at_each_end() {
+    let draw = |src: &str, ascii| render(&parse(src).unwrap(), None, ascii);
+    let lr = draw("flowchart LR\na <--> b", false);
+    assert!(lr.contains("│◄─►│"), "\n{lr}");
+    assert!(draw("flowchart LR\na <-.-> b", true).contains("|<.>|"), "ascii");
+    let td = draw("flowchart TD\na <--> b", false);
+    let col: Vec<char> = td.lines().filter_map(|l| l.chars().nth(2)).collect();
+    assert!(col.windows(3).any(|w| w == ['▲', '│', '▼']), "\n{td}");
+    // The head into `a` marks only the two-headed edge: `a --> c` leaves by
+    // its own port, without one.
+    let mixed = draw("flowchart LR\na <--> b\na --> c", false);
+    assert_eq!(mixed.matches('◄').count(), 1, "\n{mixed}");
+    assert_eq!(mixed.matches('►').count(), 2, "\n{mixed}");
+    // A back edge keeps its head into its source too.
+    let back = draw("flowchart LR\na --> b --> c\nc <--> a", false);
+    assert!(back.contains("│ c │◄"), "\n{back}");
+}

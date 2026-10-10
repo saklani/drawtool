@@ -356,6 +356,7 @@ save -.-> cache[invalidate]   %% dotted
 save ==> resp[201 Created]    %% thick
 a --> b & c                   %% fan-out (also: a & b --> c)
 x --- y                       %% no arrowhead
+x <--> y                      %% arrowheads at both ends (also <-.-> <==>)
 n[two<br>lines]               %% multi-line label
 a[x] --> b; b --> c           %% `;` separates statements
 subgraph api [API server]     %% dashed group frame
@@ -371,8 +372,8 @@ nearest of these. Cycles (back edges are routed around the outside), self-loops 
 label wins, `:::class`, `classDef`, `style`, `linkStyle` and `click` don't change the drawing, and a
 node belongs to the innermost subgraph that mentions it.
 
-Not supported, and rejected with an error rather than drawn wrong: `RL`/`BT` directions, `<-->`,
-`--o`, `--x`, `~~~`, and edges to a subgraph. drawtool also accepts a few things Mermaid doesn't:
+Not supported, and rejected with an error rather than drawn wrong: `RL`/`BT` directions,
+`--o`, `--x`, `o--o`, `x--x`, `~~~`, and edges to a subgraph. drawtool also accepts a few things Mermaid doesn't:
 no `flowchart` line (drawn left-to-right), `%%` comments at the end of a line, `#` comment lines,
 and `%% highlight: a, b` and `%% stack: a b` (plain comments to Mermaid).
 

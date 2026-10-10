@@ -19,7 +19,7 @@
 //! enters its target from the channel before it with an ordinary arrowhead.
 //! Everything about them is in the "Back edges" section below.
 
-use crate::model::{Direction, EdgeDef, Graph, Mark, Shape, Style};
+use crate::model::{Arrow, Direction, EdgeDef, Graph, Mark, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
 use crate::text::width;
 use petgraph::algo::toposort;
@@ -98,7 +98,7 @@ struct Edge {
     dst: usize,
     label: Option<Vec<String>>,
     style: Style,
-    arrow: bool,
+    arrow: Arrow,
     /// A back edge (it closes a cycle): routed around the outside instead
     /// of through the layers.
     rev: bool,
@@ -113,10 +113,12 @@ enum Side {
     Out,
 }
 
-/// (node, side, style): edges of one style share a port on a box side; a
-/// second style gets its own port beside it, so dotted and solid stay apart.
-/// Node indices from `nodes.len()` on stand for a back edge's outer lane.
-type PortKey = (usize, Side, Style);
+/// (node, side, (style, head)): edges of one style share a port on a box
+/// side; a second style gets its own port beside it, so dotted and solid stay
+/// apart. So does the start of a two-headed edge (`head`), whose arrowhead
+/// into its source must not mark the other edges leaving it. Node indices
+/// from `nodes.len()` on stand for a back edge's outer lane.
+type PortKey = (usize, Side, (Style, bool));
 
 /// One edge segment between adjacent layers, `cs` → `ct` across the channel.
 struct Seg {
@@ -141,6 +143,12 @@ impl Seg {
     fn bent(&self) -> bool {
         self.cs != self.ct
     }
+
+    /// Whether it starts with a two-headed edge's head into its source.
+    fn head(&self) -> bool {
+        let (_, _, (_, head)) = self.sk;
+        head
+    }
 }
 
 /// A back edge's route: the half out of its source, the half into its
@@ -160,7 +168,7 @@ struct StackEdge {
     dst: usize,
     label: Option<Vec<String>>,
     style: Style,
-    arrow: bool,
+    arrow: Arrow,
 }
 
 /// Weighted isotonic (non-decreasing) regression.
@@ -340,7 +348,8 @@ fn layer_graph(graph: &Graph, s: &Structure) -> (Vec<Node>, Vec<Edge>, Vec<Stack
     for e in graph.g.edge_references() {
         let (src, dst, rev, d) = (e.source().index(), e.target().index(), s.back[e.id().index()], e.weight());
         if src == dst {
-            nodes[src].looped = Some((d.style, d.arrow));
+            // Both ends are the same box, so a second head would add nothing.
+            nodes[src].looped = Some((d.style, d.arrow != Arrow::None));
             continue;
         }
         if stack_of(src).is_some() && stack_of(src) == stack_of(dst) {
@@ -386,8 +395,8 @@ struct Layout<Phase> {
     lanes: Vec<(usize, usize, usize)>,
     rank: Vec<usize>,
     segs: Vec<Seg>,
-    /// The styles of the edges at each box side, in order of appearance.
-    groups: HashMap<(usize, Side), Vec<Style>>,
+    /// The port kinds (see [`PortKey`]) at each box side, in order of appearance.
+    groups: HashMap<(usize, Side), Vec<(Style, bool)>>,
     port: HashMap<PortKey, i64>,
     backs: Vec<BackEdge>,
     /// Each stack's boxes, in order across the flow; for each stacked box,
@@ -692,7 +701,9 @@ impl Layout<Ordered> {
         if self.td {
             labels.map(|l| width(&l.join(" ")) + 2).max().unwrap_or(0).max(3)
         } else {
-            labels.map(|l| l.len() as i64).max().unwrap_or(0).max(2)
+            // A two-headed line needs a cell of line between its heads.
+            let both = self.between(a, b).any(|e| e.arrow == Arrow::Both);
+            labels.map(|l| l.len() as i64).max().unwrap_or(0).max(2 + i64::from(both))
         }
     }
 
@@ -704,24 +715,28 @@ impl Layout<Ordered> {
             let back = e.rev.then_some(self.backs.len());
             let seg =
                 |chan, sk, tk, arrow_end| Seg { chan, back, style: e.style, arrow_end, sk, tk, cs: 0, ct: 0, track: 0 };
-            let (out, inn) = (|n| (n, Side::Out, e.style), |n| (n, Side::In, e.style));
+            // Only the edge's first segment starts at its source, so only it
+            // carries the head of a two-headed edge there.
+            let head = |first: bool| first && e.arrow == Arrow::Both;
+            let (out, inn) = (|n, first| (n, Side::Out, (e.style, head(first))), |n| (n, Side::In, (e.style, false)));
+            let arrow = e.arrow != Arrow::None;
             if e.rev {
                 let (lane, out_seg) = (lanes_from + ei, self.segs.len());
-                self.segs.push(seg(self.nodes[e.src].layer, out(e.src), inn(lane), false));
-                self.segs.push(seg(self.nodes[e.dst].layer - 1, out(lane), inn(e.dst), e.arrow));
+                self.segs.push(seg(self.nodes[e.src].layer, out(e.src, true), inn(lane), false));
+                self.segs.push(seg(self.nodes[e.dst].layer - 1, out(lane, false), inn(e.dst), arrow));
                 self.backs.push(BackEdge { edge: ei, out_seg, in_seg: out_seg + 1, lane: 0 });
             } else {
                 for (j, w) in e.path.windows(2).enumerate() {
-                    let arrow_end = e.arrow && j == e.path.len() - 2;
-                    self.segs.push(seg(self.nodes[w[0]].layer, out(w[0]), inn(w[1]), arrow_end));
+                    let arrow_end = arrow && j == e.path.len() - 2;
+                    self.segs.push(seg(self.nodes[w[0]].layer, out(w[0], j == 0), inn(w[1]), arrow_end));
                 }
             }
         }
         for s in &self.segs {
-            for (n, side, style) in [s.sk, s.tk].into_iter().filter(|k| k.0 < lanes_from) {
-                let styles = self.groups.entry((n, side)).or_default();
-                if !styles.contains(&style) {
-                    styles.push(style);
+            for (n, side, kind) in [s.sk, s.tk].into_iter().filter(|k| k.0 < lanes_from) {
+                let kinds = self.groups.entry((n, side)).or_default();
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
                 }
             }
         }
@@ -1049,7 +1064,12 @@ impl Layout<Routed> {
         for (k, ntracks) in ntracks.into_iter().enumerate() {
             self.bstart.push(cur);
             cur += self.band_len(k);
-            let lead = i64::from(!self.td) + if self.frames().any(|f| f.2 == k) { FRAME } else { 0 };
+            // A two-headed edge's head into its source takes a cell, and a
+            // line cell after it keeps it apart from the tracks and other head.
+            let head = self.segs.iter().any(|s| s.chan == k && s.head());
+            let lead = i64::from(!self.td)
+                + if head { 1 + i64::from(self.td) } else { 0 }
+                + if self.frames().any(|f| f.2 == k) { FRAME } else { 0 };
             let before_tail = if self.frames().any(|f| f.1 == k + 1) { FRAME } else { 0 };
             self.tstart.push(cur + lead);
             cur += lead + ntracks + before_tail + 1;
@@ -1139,18 +1159,20 @@ impl Layout<Routed> {
         // different ports that pass through each other are drawn as crossings.
         let mut nets: HashMap<PortKey, usize> = HashMap::new();
         let mut net = |p: &mut Painter, key: PortKey| *nets.entry(key).or_insert_with(|| p.net());
-        let (arrow, lanes_from) = (if self.td { '▼' } else { '►' }, self.nodes.len());
+        let (arrow, back_arrow) = if self.td { ('▼', '▲') } else { ('►', '◄') };
+        let lanes_from = self.nodes.len();
         let track = |s: &Seg| self.tstart[s.chan] + s.track;
         for (i, s) in self.segs.iter().enumerate() {
             let t = track(s);
             // Back edges have a lane, not a node, at one end, so only look up the other.
-            let start = || (out_l(s.sk.0), s.cs);
+            // A two-headed edge starts a cell out, past its head into the source.
+            let start = || (out_l(s.sk.0) + i64::from(s.head()), s.cs);
             let end = || (in_l(s.tk.0) - i64::from(s.arrow_end), s.ct);
             let pieces = if let Some(b) = s.back {
                 // A back edge: out of its source to the outer lane, back along
                 // the lane, and in to its target like any other edge.
                 let back = &self.backs[b];
-                let lane_key = (lanes_from + back.edge, Side::In, s.style);
+                let lane_key = (lanes_from + back.edge, Side::In, (s.style, false));
                 if i == back.out_seg {
                     let turn = track(&self.segs[back.in_seg]);
                     vec![
@@ -1182,6 +1204,10 @@ impl Layout<Routed> {
             if s.arrow_end {
                 let (x, y) = self.phys(in_l(s.tk.0) - 1, s.ct);
                 p.symbol(x, y, arrow);
+            }
+            if s.head() {
+                let (x, y) = self.phys(out_l(s.sk.0) + 1, s.cs);
+                p.symbol(x, y, back_arrow);
             }
         }
         // Back-edge labels: on the lane in LR, beside it in TD.
@@ -1235,12 +1261,15 @@ impl Layout<Routed> {
             for (i, e) in lines.into_iter().enumerate() {
                 let at = mid - (k - 1) + 2 * i as i64;
                 let (from, to, step) = if e.src == u { (cu, cw, 1) } else { (cw, cu, -1) };
-                let end = to - step * i64::from(e.arrow);
+                let (head, tail) = (e.arrow != Arrow::None, e.arrow == Arrow::Both);
+                let (start, end) = (from + step * i64::from(tail), to - step * i64::from(head));
                 let net = p.net();
-                p.line(&[self.phys(at, from), self.phys(at, end)], net, Stroke::light(e.style), Layer::Main);
-                if e.arrow {
-                    let (x, y) = self.phys(at, end);
-                    p.symbol(x, y, if step == 1 { ahead } else { back });
+                p.line(&[self.phys(at, start), self.phys(at, end)], net, Stroke::light(e.style), Layer::Main);
+                for (on, c, forward) in [(head, end, step == 1), (tail, start, step != 1)] {
+                    if on {
+                        let (x, y) = self.phys(at, c);
+                        p.symbol(x, y, if forward { ahead } else { back });
+                    }
                 }
                 let Some(label) = &e.label else { continue };
                 let gap = cw - cu - 1;
@@ -1269,13 +1298,16 @@ impl Layout<Routed> {
                 if e.src != u {
                     (a, b) = (b, a);
                 }
-                let end = (b.0 + i64::from(e.arrow), b.1);
-                let pts = [a, (lane, a.1), (lane, b.1), end].map(|(l, c)| self.phys(l, c));
+                let (head, tail) = (e.arrow != Arrow::None, e.arrow == Arrow::Both);
+                let (start, end) = ((a.0 + i64::from(tail), a.1), (b.0 + i64::from(head), b.1));
+                let pts = [start, (lane, a.1), (lane, b.1), end].map(|(l, c)| self.phys(l, c));
                 let net = p.net();
                 p.line(&pts, net, Stroke::light(e.style), Layer::Main);
-                if e.arrow {
-                    let (x, y) = self.phys(end.0, end.1);
-                    p.symbol(x, y, home);
+                for (on, (l, c)) in [(head, end), (tail, start)] {
+                    if on {
+                        let (x, y) = self.phys(l, c);
+                        p.symbol(x, y, home);
+                    }
                 }
                 if let Some(label) = &e.label {
                     let mid = (a.1 + b.1).div_euclid(2);
@@ -1322,11 +1354,11 @@ mod tests {
     }
 
     fn edge(src: usize, dst: usize, style: Style, rev: bool) -> Edge {
-        Edge { src, dst, label: None, style, arrow: true, rev, path: vec![] }
+        Edge { src, dst, label: None, style, arrow: Arrow::End, rev, path: vec![] }
     }
 
     fn seg(sk: PortKey, tk: PortKey, cs: i64, ct: i64) -> Seg {
-        let style = sk.2;
+        let (_, _, (style, _)) = sk;
         Seg { chan: 0, back: None, style, arrow_end: false, sk, tk, cs, ct, track: 0 }
     }
 
@@ -1411,7 +1443,7 @@ mod tests {
         // By span, `a` (0..10) comes first, but if it took the upper track its
         // way down (at 10) would cross b's track and b's way up (at 5) a's.
         let mut l: Layout<Placed> = Layout { layers: vec![vec![], vec![]], ..Default::default() };
-        let key = |n, side| (n, side, Style::Solid);
+        let key = |n, side| (n, side, (Style::Solid, false));
         l.segs.push(seg(key(0, Side::Out), key(1, Side::In), 0, 10));
         l.segs.push(seg(key(2, Side::Out), key(3, Side::In), 5, 20));
         l.tracks();
@@ -1424,12 +1456,13 @@ mod tests {
         // solid one to `b` straight below.
         let mut l: Layout<Placed> =
             Layout { nodes: vec![node(0, 11, 0), node(0, 11, 1), node(40, 11, 1)], ..Default::default() };
-        l.groups.insert((0, Side::Out), vec![Style::Dotted, Style::Solid]);
-        l.segs.push(seg((0, Side::Out, Style::Dotted), (2, Side::In, Style::Dotted), 0, 0));
-        l.segs.push(seg((0, Side::Out, Style::Solid), (1, Side::In, Style::Solid), 0, 0));
+        let (dotted, solid) = ((Style::Dotted, false), (Style::Solid, false));
+        l.groups.insert((0, Side::Out), vec![dotted, solid]);
+        l.segs.push(seg((0, Side::Out, dotted), (2, Side::In, dotted), 0, 0));
+        l.segs.push(seg((0, Side::Out, solid), (1, Side::In, solid), 0, 0));
         l.ports();
-        assert_eq!(l.port[&(0, Side::Out, Style::Solid)], 5);
-        assert!(l.port[&(0, Side::Out, Style::Dotted)] > 5, "the dotted port leans toward c");
+        assert_eq!(l.port[&(0, Side::Out, solid)], 5);
+        assert!(l.port[&(0, Side::Out, dotted)] > 5, "the dotted port leans toward c");
     }
 
     #[test]

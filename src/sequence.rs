@@ -160,12 +160,8 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
                 let at = c.get(3).map_or(0, |m| m.start());
                 return Err(Error::at_column(lineno, col(at), "only `Note over` can span two participants"));
             }
-            items.push(Item::Note(Note {
-                side,
-                first: a.min(z),
-                last: a.max(z),
-                lines: text_lines(c.get(4).map(|m| m.as_str())),
-            }));
+            let lines = text_lines(c.get(4).map(|m| m.as_str()));
+            items.push(Item::Note(Note { side, first: a.min(z), last: a.max(z), lines }));
         } else if line == "end" {
             let (kind, _, _) =
                 open.pop().ok_or_else(|| Error::at_column(lineno, col(0), "`end` without an open block"))?;
@@ -266,11 +262,15 @@ fn block_title(kind: &str, text: &str) -> String {
     }
 }
 
-/// A frame opened by `loop`/`alt`/..., spanning columns `left..=right`.
+/// A frame opened by `loop`/`alt`/..., spanning columns `left..=right` from
+/// item `top` to item `bottom` (`None` if never closed), with its dividers.
 struct Frame {
     title: String,
     left: i64,
     right: i64,
+    top: usize,
+    bottom: Option<usize>,
+    dividers: Vec<(usize, String)>,
 }
 
 /// Columns `lo..=hi` covered so far, if anything.
@@ -282,22 +282,25 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
     // Open frames: index, content extent so far, widest title or divider.
     let mut stack: Vec<(usize, Extent, i64)> = Vec::new();
     let grow = |e: &mut Extent, (lo, hi): (i64, i64)| *e = Some(e.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
-    for item in items {
+    for (i, item) in items.iter().enumerate() {
         match item {
             Item::Start { kind, text } => {
-                out.push(Frame { title: block_title(kind, text), left: 0, right: 0 });
-                stack.push((out.len() - 1, None, width(&block_title(kind, text))));
+                let title = block_title(kind, text);
+                stack.push((out.len(), None, width(&title)));
+                out.push(Frame { title, left: 0, right: 0, top: i, bottom: None, dividers: Vec::new() });
             }
             Item::Divider { kind, text } => {
-                if let Some(top) = stack.last_mut() {
-                    top.2 = top.2.max(width(&block_title(kind, text)));
+                if let Some(open) = stack.last_mut() {
+                    let title = block_title(kind, text);
+                    open.2 = open.2.max(width(&title));
+                    out[open.0].dividers.push((i, title));
                 }
             }
             Item::End => {
                 let Some((f, extent, title)) = stack.pop() else { continue };
                 let (lo, hi) = extent.unwrap_or((x[0], x[0]));
                 let (left, right) = (lo - 2, (hi + 2).max(lo - 2 + title + 3));
-                (out[f].left, out[f].right) = (left, right);
+                (out[f].left, out[f].right, out[f].bottom) = (left, right, Some(i));
                 if let Some(parent) = stack.last_mut() {
                     grow(&mut parent.1, (left, right));
                 }
@@ -312,88 +315,91 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
     out
 }
 
-/// Lifeline columns: wide enough for boxes, labels and notes, with every
-/// frame border clear of every lifeline.
-fn columns(seq: &Sequence) -> Vec<i64> {
+/// What an item needs from the gaps between lifelines `lo` and `hi`.
+enum Need {
+    /// The gaps together are at least this wide.
+    Span(usize, usize, i64),
+    /// One of the gaps is this wide, so a label fits without covering a lifeline.
+    Gap(usize, usize, i64),
+}
+
+/// The spacing each message, self-message and note asks for.
+fn needs(seq: &Sequence, boxw: &[i64]) -> Vec<Need> {
     let n = seq.participants.len();
-    let boxw: Vec<i64> = seq.participants.iter().map(box_width).collect();
-    let mut gap: Vec<i64> = (0..n.saturating_sub(1)).map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3).collect();
-    // Notes over several lifelines need their total span; a long message's
-    // label needs one gap it fits in, so it never covers a lifeline.
-    // (first lifeline, last lifeline, columns needed)
-    let mut spans: Vec<(usize, usize, i64)> = Vec::new();
-    let mut labels: Vec<(usize, usize, i64)> = Vec::new();
-    let mut need = |gap: &mut Vec<i64>, lo: usize, hi: usize, d: i64| match hi - lo {
-        1 => gap[lo] = gap[lo].max(d),
-        k if k > 1 => spans.push((lo, hi, d)),
-        _ => {}
-    };
+    let mut out = Vec::new();
     for item in &seq.items {
         match item {
-            Item::Message(m) if m.from == m.to && m.from + 1 < n => {
-                need(&mut gap, m.from, m.from + 1, self_reach(m) + 3)
+            Item::Message(m) if m.from == m.to => {
+                out.extend((m.from + 1 < n).then(|| Need::Span(m.from, m.from + 1, self_reach(m) + 3)));
             }
-            Item::Message(m) if m.from.abs_diff(m.to) == 1 => {
-                need(&mut gap, m.from.min(m.to), m.from.max(m.to), label_room(m));
-            }
-            Item::Message(m) if m.from != m.to && !m.lines.is_empty() => {
-                labels.push((m.from.min(m.to), m.from.max(m.to), label_room(m)));
+            Item::Message(m) => {
+                let (lo, hi) = (m.from.min(m.to), m.from.max(m.to));
+                if hi - lo == 1 {
+                    out.push(Need::Span(lo, hi, label_room(m)));
+                } else if !m.lines.is_empty() {
+                    out.push(Need::Gap(lo, hi, label_room(m)));
+                }
             }
             Item::Note(note) => {
                 let (w, i, j) = (note_width(note), note.first, note.last);
                 let (lh, rh) = halves(w);
                 match note.side {
-                    NoteSide::Right if i + 1 < n => need(&mut gap, i, i + 1, w + 3),
-                    NoteSide::Left if i > 0 => need(&mut gap, i - 1, i, w + 3),
+                    NoteSide::Right if i + 1 < n => out.push(Need::Span(i, i + 1, w + 3)),
+                    NoteSide::Left if i > 0 => out.push(Need::Span(i - 1, i, w + 3)),
+                    // Each half clears the note's border and the neighbour's box.
                     NoteSide::Over if i == j => {
-                        if i > 0 {
-                            need(&mut gap, i - 1, i, lh + 2 + halves(boxw[i - 1]).1.min(lh));
-                        }
-                        if i + 1 < n {
-                            need(&mut gap, i, i + 1, rh + 2 + halves(boxw[i + 1]).0.min(rh));
-                        }
+                        out.extend((i > 0).then(|| Need::Span(i - 1, i, lh + 2 + halves(boxw[i - 1]).1.min(lh))));
+                        out.extend((i + 1 < n).then(|| Need::Span(i, i + 1, rh + 2 + halves(boxw[i + 1]).0.min(rh))));
                     }
-                    NoteSide::Over => need(&mut gap, i, j, w - 5),
+                    NoteSide::Over => out.push(Need::Span(i, j, w - 5)),
                     _ => {}
                 }
             }
             _ => {}
         }
     }
-    spans.sort_by_key(|&(lo, hi, _)| hi - lo);
-    for (lo, hi, d) in spans {
-        let (have, k) = (gap[lo..hi].iter().sum::<i64>(), (hi - lo) as i64);
-        if have < d {
-            for (step, g) in gap[lo..hi].iter_mut().enumerate() {
-                *g += (d - have) / k + i64::from((step as i64) < (d - have) % k);
+    out
+}
+
+/// Lifeline columns: wide enough for boxes, labels and notes, with every
+/// frame border clear of every lifeline.
+fn columns(seq: &Sequence, boxw: &[i64]) -> Vec<i64> {
+    let n = seq.participants.len();
+    let mut gap: Vec<i64> = (0..n.saturating_sub(1)).map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3).collect();
+    // Narrow spans first, so a wide one only adds what is still missing,
+    // shared evenly; then give each long label one gap to sit in.
+    let mut needs = needs(seq, boxw);
+    needs.sort_by_key(|need| match *need {
+        Need::Span(lo, hi, _) => (0, hi - lo),
+        Need::Gap(..) => (1, 0),
+    });
+    for need in needs {
+        match need {
+            Need::Span(lo, hi, w) => {
+                let (missing, k) = ((w - gap[lo..hi].iter().sum::<i64>()).max(0), (hi - lo) as i64);
+                for (step, g) in gap[lo..hi].iter_mut().enumerate() {
+                    *g += missing / k + i64::from((step as i64) < missing % k);
+                }
             }
-        }
-    }
-    for (lo, hi, room) in labels {
-        if gap[lo..hi].iter().all(|&g| g < room) {
             // Widen the widest gap of the span: the least extra width.
-            let widest = (lo..hi).rev().max_by_key(|&i| gap[i]).unwrap_or(lo);
-            gap[widest] = room;
+            Need::Gap(lo, hi, w) if gap[lo..hi].iter().all(|&g| g < w) => {
+                let widest = (lo..hi).rev().max_by_key(|&i| gap[i]).unwrap_or(lo);
+                gap[widest] = w;
+            }
+            Need::Gap(..) => {}
         }
     }
+    // Push lifelines apart until no frame border sits on (or next to) one:
+    // a left border widens the gap after that lifeline, a right border the gap before.
     let place = |gap: &[i64]| -> Vec<i64> { (0..n).map(|i| gap[..i].iter().sum()).collect() };
-    // Push lifelines apart until no frame border sits on (or next to) one.
     for _ in 0..200 {
         let x = place(&gap);
-        let touching = |&Frame { left, right, .. }: &Frame| -> Vec<usize> {
-            let near = |a: i64, b: i64| (a - b).abs() <= 1;
-            (0..n)
-                .filter_map(|m| {
-                    if near(left, x[m]) && m + 1 < n {
-                        Some(m)
-                    } else if near(right, x[m]) && m > 0 {
-                        Some(m - 1)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+        let near = |border: i64, m: usize| (border - x[m]).abs() <= 1;
+        let bump = |f: &Frame, m: usize| {
+            let left = near(f.left, m) && m + 1 < n;
+            (left || near(f.right, m) && m > 0).then(|| if left { m } else { m - 1 })
         };
+        let touching = |f: &Frame| -> Vec<usize> { (0..n).filter_map(|m| bump(f, m)).collect() };
         let Some(bumps) = frames(&seq.items, &x).iter().map(touching).find(|b| !b.is_empty()) else { break };
         for m in bumps {
             gap[m] += 1;
@@ -412,46 +418,31 @@ fn boxed(p: &mut Painter, (left, top): (i64, i64), w: i64, lines: &[String], cor
 
 /// The row each item starts on, and the row of the footer boxes.
 fn rows(seq: &Sequence, header: i64) -> (Vec<i64>, i64) {
-    let mut y = header + 1;
-    let rows = seq
-        .items
-        .iter()
-        .map(|item| {
-            let row = y;
-            y += match item {
-                Item::Message(m) => m.lines.len() as i64 + 1 + i64::from(m.from == m.to),
-                Item::Note(n) => n.lines.len() as i64 + 2,
-                _ => 1,
-            };
-            row
-        })
-        .collect();
-    (rows, y + 1)
+    let mut rows = vec![header + 1];
+    for item in &seq.items {
+        let height = match item {
+            Item::Message(m) => m.lines.len() as i64 + 1 + i64::from(m.from == m.to),
+            Item::Note(n) => n.lines.len() as i64 + 2,
+            _ => 1,
+        };
+        rows.push(rows[rows.len() - 1] + height);
+    }
+    let footer = rows.pop().expect("starts with the first item's row") + 1;
+    (rows, footer)
 }
 
 /// Block frames, on the under layer so lifelines and messages run through.
-fn draw_frames(p: &mut Painter, seq: &Sequence, rows: &[i64], frames: &[Frame]) {
-    let (mut stack, mut next): (Vec<(usize, i64, usize)>, usize) = (Vec::new(), 0);
-    for (item, &row) in seq.items.iter().zip(rows) {
-        match item {
-            Item::Start { .. } => {
-                stack.push((next, row, p.net()));
-                next += 1;
-            }
-            Item::Divider { kind, text } => {
-                if let Some(&(f, _, net)) = stack.last() {
-                    let (l, r) = (frames[f].left, frames[f].right);
-                    p.line(&[(l, row), (r, row)], net, Stroke::DOTTED, Layer::Under);
-                    p.text(l + 1, row, &format!(" {} ", block_title(kind, text)));
-                }
-            }
-            Item::End => {
-                let Some((f, top, net)) = stack.pop() else { continue };
-                let Frame { title, left: l, right: r } = &frames[f];
-                p.line(&[(*l, top), (*r, top), (*r, row), (*l, row), (*l, top)], net, Stroke::DOTTED, Layer::Under);
-                p.text(l + 1, top, &format!(" {title} "));
-            }
-            _ => {}
+fn draw_frames(p: &mut Painter, rows: &[i64], frames: &[Frame]) {
+    for f in frames {
+        let (net, l, r) = (p.net(), f.left, f.right);
+        for (i, title) in &f.dividers {
+            p.line(&[(l, rows[*i]), (r, rows[*i])], net, Stroke::DOTTED, Layer::Under);
+            p.text(l + 1, rows[*i], &format!(" {title} "));
+        }
+        if let Some(bottom) = f.bottom {
+            let (top, bottom) = (rows[f.top], rows[bottom]);
+            p.line(&[(l, top), (r, top), (r, bottom), (l, bottom), (l, top)], net, Stroke::DOTTED, Layer::Under);
+            p.text(l + 1, top, &format!(" {} ", f.title));
         }
     }
 }
@@ -487,16 +478,16 @@ pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
     if seq.participants.is_empty() {
         return String::new();
     }
-    let x = columns(seq);
-    let mut p = Painter::new(ascii);
     let boxw: Vec<i64> = seq.participants.iter().map(box_width).collect();
+    let x = columns(seq, &boxw);
+    let mut p = Painter::new(ascii);
     let boxh: Vec<i64> = seq.participants.iter().map(|p| p.lines.len() as i64 + 2).collect();
     let (rows, footer) = rows(seq, *boxh.iter().max().unwrap_or(&2));
     for (i, &xi) in x.iter().enumerate() {
         let net = p.net();
         p.line(&[(xi, boxh[i] - 1), (xi, footer)], net, Stroke::LIGHT, Layer::Main);
     }
-    draw_frames(&mut p, seq, &rows, &frames(&seq.items, &x));
+    draw_frames(&mut p, &rows, &frames(&seq.items, &x));
     for (item, &row) in seq.items.iter().zip(&rows) {
         match item {
             Item::Message(m) => draw_message(&mut p, m, row, &x),

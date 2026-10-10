@@ -154,3 +154,24 @@ fn group_frame_holds_members_and_excludes_others() {
         assert!(!inside(find("│ c ").unwrap()) && !inside(find("│ d ").unwrap()), "{dir}:\n{out}");
     }
 }
+
+#[test]
+fn groups_with_back_edges_fit_without_hanging() {
+    // Regression: a lane overlapping no earlier lane underflowed `need - start`
+    // inside band sub-graphs, and release builds wrapped it into a hang.
+    let src = "flowchart LR
+subgraph onboarding [Onboarding]
+  welcome[Welcome] -->|Get started| email[Enter email] -->|code sent| verify[Verify code]
+end
+subgraph app [App]
+  home[Home] -->|Add money| amount[Amount] --> method{Pay with?}
+  method -->|card| card[Card checkout]
+  method -->|bank| bank[Bank details]
+  card & bank --> done[Success]
+end
+verify -->|ok| home
+verify -.->|wrong code| email
+done -.->|back| home";
+    let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 120);
+    assert!(fitted.text.contains("Onboarding") && fitted.text.contains("Success"));
+}

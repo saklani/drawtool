@@ -576,9 +576,8 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         let need = (0..r)
             .filter(|&q| overlaps(lane_order[q], lr))
             .map(|q| extent[q].1 + 1 + gap + margin(lane_order[q]) + mr)
-            .max()
-            .unwrap_or(i64::MIN);
-        let push = (need - extent[r].0).max(0);
+            .max();
+        let push = need.map_or(0, |n| (n - extent[r].0).max(0));
         for (v, nd) in ln.iter_mut().enumerate() {
             if lane_rank[v] == r {
                 nd.pos += push;

@@ -12,6 +12,9 @@ unicode-width = "0.2"
 
 [profile.release]
 opt-level = 3
+# Layout arithmetic should never overflow; if it does, fail loudly instead of
+# wrapping into a huge coordinate and hanging.
+overflow-checks = true
 lto = true
 strip = true
 

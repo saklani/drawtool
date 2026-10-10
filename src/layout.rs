@@ -19,7 +19,7 @@
 //! enters its target from the channel before it with an ordinary arrowhead.
 //! Everything about them is in the "Back edges" section below.
 
-use crate::model::{Direction, EdgeDef, Graph, Mark, NodeDef, Shape, Style};
+use crate::model::{Direction, EdgeDef, Graph, Mark, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
 use crate::text::width;
 use petgraph::algo::toposort;
@@ -152,6 +152,17 @@ struct BackEdge {
     lane: i64,
 }
 
+/// An edge between two boxes of one stack. Neighbours in the stack are
+/// joined by a short straight line across the gap between them; others by a
+/// bracket on the far side of the stack.
+struct StackEdge {
+    src: usize,
+    dst: usize,
+    label: Option<Vec<String>>,
+    style: Style,
+    arrow: bool,
+}
+
 /// Weighted isotonic (non-decreasing) regression.
 fn pava(ys: &[f64], ws: &[f64]) -> Vec<f64> {
     let mut blocks: Vec<(f64, f64, usize)> = Vec::new();
@@ -169,16 +180,23 @@ fn pava(ys: &[f64], ws: &[f64]) -> Vec<f64> {
 /// `graph` with each node's out-edges in the order they were written:
 /// petgraph lists the newest first, and for a depth-first search the order
 /// decides which edge of a cycle is the one that closes it.
-#[derive(Clone, Copy)]
-struct SourceOrder<'a>(&'a DiGraph<NodeDef, EdgeDef>);
+struct SourceOrder<'a, N>(&'a DiGraph<N, EdgeDef>);
 
-impl GraphBase for SourceOrder<'_> {
+impl<N> Clone for SourceOrder<'_, N> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<N> Copy for SourceOrder<'_, N> {}
+
+impl<N> GraphBase for SourceOrder<'_, N> {
     type NodeId = NodeIndex;
     type EdgeId = EdgeIndex;
 }
 
-impl Visitable for SourceOrder<'_> {
-    type Map = <DiGraph<NodeDef, EdgeDef> as Visitable>::Map;
+impl<N> Visitable for SourceOrder<'_, N> {
+    type Map = <DiGraph<N, EdgeDef> as Visitable>::Map;
     fn visit_map(&self) -> Self::Map {
         self.0.visit_map()
     }
@@ -187,9 +205,9 @@ impl Visitable for SourceOrder<'_> {
     }
 }
 
-impl GraphRef for SourceOrder<'_> {}
+impl<N> GraphRef for SourceOrder<'_, N> {}
 
-impl IntoNeighbors for SourceOrder<'_> {
+impl<N> IntoNeighbors for SourceOrder<'_, N> {
     type Neighbors = std::iter::Rev<std::vec::IntoIter<NodeIndex>>;
     fn neighbors(self, v: NodeIndex) -> Self::Neighbors {
         self.0.neighbors(v).collect::<Vec<_>>().into_iter().rev()
@@ -205,17 +223,38 @@ pub(crate) struct Structure {
     pub layer: Vec<usize>,
 }
 
-/// Find the back edges, then layer the nodes.
+/// Find the back edges, then layer the nodes. A stack counts as one node:
+/// edges into or out of any of its boxes are its edges, and edges between
+/// its boxes are self-loops, which neither step counts.
 pub(crate) fn structure(graph: &Graph) -> Structure {
-    let back = back_edges(graph);
-    Structure { layer: layers(graph, &back), back }
+    if graph.stacks.is_empty() {
+        let back = back_edges(&graph.g);
+        return Structure { layer: layers(&graph.g, &back), back };
+    }
+    let mut node: Vec<Option<NodeIndex>> = vec![None; graph.g.node_count()];
+    let mut contracted: DiGraph<(), EdgeDef> = DiGraph::new();
+    for v in graph.g.node_indices() {
+        if node[v.index()].is_none() {
+            let c = contracted.add_node(());
+            let stack = graph.stacks.iter().find(|st| st.contains(&v));
+            for m in stack.map_or(&[v][..], Vec::as_slice) {
+                node[m.index()] = Some(c);
+            }
+        }
+    }
+    let node: Vec<NodeIndex> = node.into_iter().flatten().collect();
+    for e in graph.g.edge_references() {
+        contracted.add_edge(node[e.source().index()], node[e.target().index()], e.weight().clone());
+    }
+    let back = back_edges(&contracted);
+    let layer = layers(&contracted, &back);
+    Structure { layer: node.iter().map(|c| layer[c.index()]).collect(), back }
 }
 
 /// For each edge, whether it closes a cycle: depth-first search, from the
 /// sources first and then from any node not yet reached, finds it leading
 /// back to a node still on the search path. Self-loops don't count.
-fn back_edges(graph: &Graph) -> Vec<bool> {
-    let g = &graph.g;
+fn back_edges<N>(g: &DiGraph<N, EdgeDef>) -> Vec<bool> {
     let source = |v: &NodeIndex| g.edges_directed(*v, Incoming).all(|e| e.source() == *v);
     let mut back = HashSet::new();
     depth_first_search(SourceOrder(g), g.node_indices().filter(source).chain(g.node_indices()), |event| {
@@ -229,11 +268,11 @@ fn back_edges(graph: &Graph) -> Vec<bool> {
 /// Each node's layer: the longest path to it, ignoring back edges and
 /// self-loops, where a labelled edge spans two layers (its label sits in the
 /// one between); then sources are pulled down next to their nearest child.
-fn layers(graph: &Graph, back: &[bool]) -> Vec<usize> {
-    let forward = EdgeFiltered::from_fn(&graph.g, |e| !back[e.id().index()] && e.source() != e.target());
+fn layers<N>(g: &DiGraph<N, EdgeDef>, back: &[bool]) -> Vec<usize> {
+    let forward = EdgeFiltered::from_fn(g, |e| !back[e.id().index()] && e.source() != e.target());
     let topo = toposort(&forward, None).expect("without back edges and self-loops the graph is acyclic");
     let span = |e: &EdgeReference<EdgeDef>| 1 + usize::from(e.weight().label.is_some());
-    let mut layer = vec![0; graph.g.node_count()];
+    let mut layer = vec![0; g.node_count()];
     for &v in &topo {
         let after = forward.edges_directed(v, Incoming).map(|e| layer[e.source().index()] + span(&e));
         layer[v.index()] = after.max().unwrap_or(0);
@@ -284,8 +323,9 @@ fn crossings(layers: &[Vec<usize>], nodes: &[Node]) -> usize {
 }
 
 /// Layout's own nodes and edges, with the layers and back edges of `s`, and
-/// each edge label a node of its own.
-fn layer_graph(graph: &Graph, s: &Structure) -> (Vec<Node>, Vec<Edge>) {
+/// each edge label a node of its own. Edges between the boxes of a stack are
+/// set aside: they are drawn across the flow, not through the layers.
+fn layer_graph(graph: &Graph, s: &Structure) -> (Vec<Node>, Vec<Edge>, Vec<StackEdge>) {
     let mut nodes: Vec<Node> = (graph.g.node_weights().zip(&s.layer))
         .map(|(n, &layer)| Node {
             shape: n.shape,
@@ -295,11 +335,16 @@ fn layer_graph(graph: &Graph, s: &Structure) -> (Vec<Node>, Vec<Edge>) {
             ..Node::new(n.lines.clone(), Kind::Real)
         })
         .collect();
-    let mut edges = Vec::new();
+    let stack_of = |v: usize| graph.stacks.iter().position(|st| st.iter().any(|m| m.index() == v));
+    let (mut edges, mut stacked) = (Vec::new(), Vec::new());
     for e in graph.g.edge_references() {
         let (src, dst, rev, d) = (e.source().index(), e.target().index(), s.back[e.id().index()], e.weight());
         if src == dst {
             nodes[src].looped = Some((d.style, d.arrow));
+            continue;
+        }
+        if stack_of(src).is_some() && stack_of(src) == stack_of(dst) {
+            stacked.push(StackEdge { src, dst, label: d.label.clone(), style: d.style, arrow: d.arrow });
             continue;
         }
         // The layering chain: source, label node, target (reversed for a back edge).
@@ -310,7 +355,7 @@ fn layer_graph(graph: &Graph, s: &Structure) -> (Vec<Node>, Vec<Edge>) {
         }
         edges.push(Edge { src, dst, label: d.label.clone(), style: d.style, arrow: d.arrow, rev, path });
     }
-    (nodes, edges)
+    (nodes, edges, stacked)
 }
 
 // Phases of a `Layout`, named for what has been decided so far.
@@ -345,6 +390,11 @@ struct Layout<Phase> {
     groups: HashMap<(usize, Side), Vec<Style>>,
     port: HashMap<PortKey, i64>,
     backs: Vec<BackEdge>,
+    /// Each stack's boxes, in order across the flow; for each stacked box,
+    /// its stack and place in it; and the edges between stacked boxes.
+    stacks: Vec<Vec<usize>>,
+    stacked: HashMap<usize, (usize, usize)>,
+    stack_edges: Vec<StackEdge>,
     /// Per layer: where its band starts, and the first track of the channel after it.
     bstart: Vec<i64>,
     tstart: Vec<i64>,
@@ -394,20 +444,80 @@ impl<P> Layout<P> {
             groups: self.groups,
             port: self.port,
             backs: self.backs,
+            stacks: self.stacks,
+            stacked: self.stacked,
+            stack_edges: self.stack_edges,
             bstart: self.bstart,
             tstart: self.tstart,
             phase: PhantomData,
+        }
+    }
+
+    // ---- Stacks -------------------------------------------------------------
+
+    /// `lay` with each stack's boxes together, in stack order, where the
+    /// first of them was.
+    fn glue(&self, lay: &[usize]) -> Vec<usize> {
+        let mut out = Vec::with_capacity(lay.len());
+        for &v in lay {
+            match self.stacked.get(&v) {
+                None => out.push(v),
+                Some(&(s, _)) if !out.contains(&self.stacks[s][0]) => out.extend(&self.stacks[s]),
+                Some(_) => {}
+            }
+        }
+        out
+    }
+
+    /// Whether `b` directly follows `a` in a stack.
+    fn follows(&self, a: usize, b: usize) -> bool {
+        matches!((self.stacked.get(&a), self.stacked.get(&b)), (Some(&(s, i)), Some(&(t, j))) if s == t && j == i + 1)
+    }
+
+    /// The stack edges between `a` and `b`, either way.
+    fn between(&self, a: usize, b: usize) -> impl Iterator<Item = &StackEdge> {
+        self.stack_edges.iter().filter(move |e| (e.src, e.dst) == (a, b) || (e.src, e.dst) == (b, a))
+    }
+
+    /// A stack edge's ends in stack order: (upper, lower) in LR.
+    fn ends(&self, e: &StackEdge) -> (usize, usize) {
+        if self.stacked[&e.src].1 < self.stacked[&e.dst].1 {
+            (e.src, e.dst)
+        } else {
+            (e.dst, e.src)
+        }
+    }
+
+    /// Whether a stack edge skips over boxes, so it is drawn as a bracket.
+    fn bracket(&self, e: &StackEdge) -> bool {
+        let (a, b) = self.ends(e);
+        self.stacked[&b].1 > self.stacked[&a].1 + 1
+    }
+
+    /// The cross-axis cell where a bracket meets box `n`, on its far side:
+    /// near the end of the upper box and the start of the lower one.
+    fn bracket_at(&self, n: usize, upper: bool) -> i64 {
+        let nd = &self.nodes[n];
+        if upper {
+            nd.pos + nd.box_csize() - 2
+        } else {
+            nd.pos + 1
         }
     }
 }
 
 impl Layout<Layered> {
     fn new(graph: &Graph, s: &Structure, td: bool) -> Self {
-        let (mut nodes, edges) = layer_graph(graph, s);
+        let (mut nodes, edges, stack_edges) = layer_graph(graph, s);
         let layers = vec![vec![]; make_room_for_back_edges(&mut nodes, &edges)];
         let titles = graph.groups.iter().map(|g| g.title.clone()).collect();
         let gap = if td { 3 } else { 1 };
-        let mut l = Layout { titles, td, gap, nodes, edges, layers, ..Default::default() };
+        let stacks: Vec<Vec<usize>> = graph.stacks.iter().map(|st| st.iter().map(|v| v.index()).collect()).collect();
+        let stacked = (stacks.iter().enumerate())
+            .flat_map(|(s, st)| st.iter().enumerate().map(move |(i, &v)| (v, (s, i))))
+            .collect();
+        let mut l =
+            Layout { titles, td, gap, nodes, edges, layers, stacks, stacked, stack_edges, ..Default::default() };
         l.dummies();
         l
     }
@@ -469,8 +579,10 @@ impl Layout<Layered> {
         for v in 0..self.nodes.len() {
             self.layers[self.nodes[v].layer].push(v);
         }
-        for lay in &mut self.layers {
-            lay.sort_by_key(|&v| self.rank[v]);
+        for k in 0..nl {
+            self.layers[k].sort_by_key(|&v| self.rank[v]);
+            let lay = self.glue(&self.layers[k]);
+            self.layers[k] = lay;
         }
         let (mut best, mut best_c) = (self.layers.clone(), crossings(&self.layers, &self.nodes));
         for it in 0..16 {
@@ -489,8 +601,15 @@ impl Layout<Layered> {
                     }
                 };
                 let mut keyed: Vec<(f64, usize)> = self.layers[k].iter().map(|&v| (key(v), v)).collect();
+                // A stack moves as one, at the mean of its boxes' keys.
+                for st in &self.stacks {
+                    let ks: Vec<f64> = keyed.iter().filter(|(_, v)| st.contains(v)).map(|k| k.0).collect();
+                    let mean = ks.iter().sum::<f64>() / ks.len() as f64;
+                    keyed.iter_mut().filter(|(_, v)| st.contains(v)).for_each(|k| k.0 = mean);
+                }
                 keyed.sort_by(|a, b| self.rank[a.1].cmp(&self.rank[b.1]).then(a.0.partial_cmp(&b.0).unwrap()));
-                self.layers[k] = keyed.into_iter().map(|(_, v)| v).collect();
+                let lay: Vec<usize> = keyed.into_iter().map(|(_, v)| v).collect();
+                self.layers[k] = self.glue(&lay);
             }
             self.transpose();
             let c = crossings(&self.layers, &self.nodes);
@@ -511,8 +630,9 @@ impl Layout<Layered> {
         pos
     }
 
-    /// Swap neighbours in a layer (within a lane) while that lowers the
-    /// crossings between their edges ("transpose", as in Graphviz dot).
+    /// Swap neighbours in a layer (within a lane, never a stacked box) while
+    /// that lowers the crossings between their edges ("transpose", as in
+    /// Graphviz dot).
     fn transpose(&mut self) {
         let mut pos = self.positions();
         // Crossings among the edges of `a` and `b` when `a` is placed first.
@@ -528,7 +648,11 @@ impl Layout<Layered> {
             for lay in &mut self.layers {
                 for i in 1..lay.len() {
                     let (a, b) = (lay[i - 1], lay[i]);
-                    if self.rank[a] == self.rank[b] && cost(&self.nodes, &pos, b, a) < cost(&self.nodes, &pos, a, b) {
+                    let free = !self.stacked.contains_key(&a) && !self.stacked.contains_key(&b);
+                    if free
+                        && self.rank[a] == self.rank[b]
+                        && cost(&self.nodes, &pos, b, a) < cost(&self.nodes, &pos, a, b)
+                    {
                         lay.swap(i - 1, i);
                         (pos[a], pos[b]) = (i, i - 1);
                         improved = true;
@@ -551,8 +675,25 @@ impl Layout<Ordered> {
     /// Space after `a` in its layer: wider between two TD edge labels, so
     /// side-by-side labels don't read as one phrase.
     fn space(&self, a: usize, b: Option<&usize>) -> i64 {
+        if let Some(&b) = b.filter(|&&b| self.follows(a, b)) {
+            return self.stack_gap(a, b);
+        }
         let labels = |v: usize| self.nodes[v].kind == Kind::Label;
         self.gap + if self.td && labels(a) && b.is_some_and(|&b| labels(b)) { 3 } else { 0 }
+    }
+
+    /// The gap between neighbours in a stack: room for the lines between
+    /// them and their labels (beside the lines in LR, above them in TD).
+    fn stack_gap(&self, a: usize, b: usize) -> i64 {
+        if self.between(a, b).next().is_none() {
+            return self.gap;
+        }
+        let labels = self.between(a, b).filter_map(|e| e.label.as_ref());
+        if self.td {
+            labels.map(|l| width(&l.join(" ")) + 2).max().unwrap_or(0).max(3)
+        } else {
+            labels.map(|l| l.len() as i64).max().unwrap_or(0).max(2)
+        }
     }
 
     /// One segment per layer gap. A back edge becomes two: out of its source
@@ -586,11 +727,22 @@ impl Layout<Ordered> {
         }
     }
 
-    /// Boxes are wide (and in LR tall) enough for their text and ports.
+    /// Boxes are wide (and in LR tall) enough for their text and ports. A
+    /// stacked box is long enough along the flow for the lines to each
+    /// neighbour side by side, and a bracket's end leaves its middle free.
     fn sizes(&mut self) {
         for v in 0..self.nodes.len() {
             let ports = |side| self.groups.get(&(v, side)).map_or(0, Vec::len) as i64;
             let np = ports(Side::In).max(ports(Side::Out));
+            let (mut along, mut across) = (0, 0);
+            if let Some(&(s, i)) = self.stacked.get(&v) {
+                let st = &self.stacks[s];
+                let next = [i.checked_sub(1).map(|j| st[j]), st.get(i + 1).copied()];
+                let lines = next.into_iter().flatten().map(|u| self.between(u, v).count() as i64).max();
+                along = 2 * lines.unwrap_or(0) + 1;
+                let mut ends = self.stack_edges.iter().filter(|e| e.src == v || e.dst == v);
+                across = if ends.any(|e| self.bracket(e)) { 5 } else { 0 };
+            }
             let nd = &mut self.nodes[v];
             let (textw, nlines) = (nd.lines.iter().map(|t| width(t)).max().unwrap_or(0), nd.lines.len() as i64);
             let (w, h) = match nd.kind {
@@ -601,6 +753,7 @@ impl Layout<Ordered> {
                 Kind::Real => ((textw + 4).max(2 * np + 1), (nlines + 2).max(2 * np + 1)),
             };
             (nd.csize, nd.lsize) = if self.td || nd.kind == Kind::Dummy { (w, h) } else { (h, w) };
+            (nd.csize, nd.lsize) = (nd.csize.max(across), nd.lsize.max(along));
             nd.csize += i64::from(nd.looped.is_some());
         }
     }
@@ -611,6 +764,8 @@ impl Layout<Ordered> {
         self.pack();
         let sweep = |l: &mut Self, k: usize, up: bool| {
             let (mut ys, mut ws, mut offs, mut c) = (vec![], vec![], vec![], 0i64);
+            // A stack moves as one unit, where its boxes want to be on average.
+            let mut units: Vec<Vec<usize>> = vec![];
             for (i, &v) in l.layers[k].iter().enumerate() {
                 let nd = &l.nodes[v];
                 let nb = if up { &nd.up } else { &nd.down };
@@ -621,13 +776,30 @@ impl Layout<Ordered> {
                         (sum as f64 / nb.len() as f64, [1.0, 2.0, 4.0][kind as usize])
                     }
                 };
-                ys.push(want - (nd.box_csize() - 1).div_euclid(2) as f64 - c as f64);
-                ws.push(w);
-                offs.push(c);
+                let y = want - (nd.box_csize() - 1).div_euclid(2) as f64 - c as f64;
+                match units.last_mut() {
+                    Some(unit) if l.follows(*unit.last().unwrap(), v) => {
+                        unit.push(v);
+                        let (last, n) = (ys.len() - 1, unit.len() as f64);
+                        // The mean so far, of every box's wish weighted alike.
+                        ys[last] += (y - ys[last]) / n;
+                        ws[last] += w;
+                    }
+                    _ => {
+                        units.push(vec![v]);
+                        ys.push(y);
+                        ws.push(w);
+                        offs.push(c);
+                    }
+                }
                 c += nd.csize + l.space(v, l.layers[k].get(i + 1));
             }
-            for ((&v, y), o) in l.layers[k].clone().iter().zip(pava(&ys, &ws)).zip(offs) {
-                l.nodes[v].pos = y.round_ties_even() as i64 + o;
+            for ((unit, y), o) in units.into_iter().zip(pava(&ys, &ws)).zip(offs) {
+                let mut pos = y.round_ties_even() as i64 + o;
+                for (j, &v) in unit.iter().enumerate() {
+                    l.nodes[v].pos = pos;
+                    pos += l.nodes[v].csize + l.space(v, unit.get(j + 1));
+                }
             }
         };
         let nl = self.layers.len();
@@ -700,11 +872,18 @@ impl Layout<Placed> {
             let c = nd.cen();
             let (lo, hi) = if nd.kind == Kind::Real { (nd.pos + 1, nd.pos + nd.box_csize() - 2) } else { (c, c) };
             let mut used: Vec<i64> = Vec::new();
+            // Brackets between stacked boxes meet the far side off-centre.
+            let mut taken: Vec<i64> = vec![];
+            if side == Side::Out {
+                for e in self.stack_edges.iter().filter(|e| (e.src == n || e.dst == n) && self.bracket(e)) {
+                    taken.push(self.bracket_at(n, self.ends(e).0 == n));
+                }
+            }
             // The style whose edges run most nearly straight gets the centre.
             let mut styles = styles.clone();
             styles.sort_by_key(|&st| (toward((n, side, st)) - c).abs());
             for style in styles {
-                let free: Vec<i64> = (lo..=hi).filter(|x| !used.contains(x)).collect();
+                let free: Vec<i64> = (lo..=hi).filter(|x| !used.contains(x) && !taken.contains(x)).collect();
                 let dir = toward((n, side, style)) - c;
                 let key = |&x: &i64| (used.iter().any(|u| (x - u).abs() < 2), (x - c) * dir < 0, (x - c).abs(), x);
                 let x = if used.is_empty() { c } else { free.into_iter().min_by_key(key).unwrap_or(c) };
@@ -837,8 +1016,27 @@ impl Layout<Routed> {
         self.lanes.iter().copied().filter(|l| l.0 > 0)
     }
 
-    fn band_len(&self, k: usize) -> i64 {
+    /// The longest box in layer `k`, along the flow.
+    fn box_len(&self, k: usize) -> i64 {
         self.layers[k].iter().map(|&v| self.nodes[v].lsize).max().unwrap_or(0)
+    }
+
+    fn band_len(&self, k: usize) -> i64 {
+        self.box_len(k) + self.bracket_room(k)
+    }
+
+    /// The stack edges of layer `k` drawn as brackets beyond its boxes.
+    fn brackets(&self, k: usize) -> Vec<&StackEdge> {
+        self.stack_edges.iter().filter(|e| self.nodes[e.src].layer == k && self.bracket(e)).collect()
+    }
+
+    /// Room after layer `k`'s boxes for its brackets: a lane each, two cells
+    /// apart, and their labels beside them.
+    fn bracket_room(&self, k: usize) -> i64 {
+        let brackets = self.brackets(k);
+        let label = |l: &Vec<String>| if self.td { 1 } else { l.iter().map(|t| width(t)).max().unwrap_or(0) + 1 };
+        let labels = brackets.iter().filter_map(|e| e.label.as_ref()).map(label).max().unwrap_or(0);
+        2 * brackets.len() as i64 + labels
     }
 
     /// Layer-axis coordinates. Channels next to a frame get FRAME extra cells.
@@ -995,6 +1193,7 @@ impl Layout<Routed> {
             let (x, y) = if self.td { (back.lane + 2, mid) } else { (mid - width(&text) / 2, back.lane) };
             p.text(x, y, &text);
         }
+        self.paint_stack_edges(&mut p);
 
         // Group frames sit under everything; titles slide past crossing edges.
         for (lane, lo, hi) in self.frames() {
@@ -1013,6 +1212,80 @@ impl Layout<Routed> {
             }
         }
         Scene { boxes: self.boxes(), painter: p }
+    }
+
+    /// Edges inside stacks. Between neighbours: straight across the gap, side
+    /// by side, labels beside (LR) or above and below (TD) the lines. Between
+    /// others: out of the far side, along a lane beyond the layer's boxes,
+    /// and back in.
+    fn paint_stack_edges(&self, p: &mut Painter) {
+        let (ahead, back, home) = if self.td { ('►', '◄', '▲') } else { ('▼', '▲', '◄') };
+        let mut pairs: Vec<(usize, usize)> = vec![];
+        for e in self.stack_edges.iter().filter(|e| !self.bracket(e)) {
+            if !pairs.contains(&self.ends(e)) {
+                pairs.push(self.ends(e));
+            }
+        }
+        for (u, w) in pairs {
+            let (nu, nw) = (&self.nodes[u], &self.nodes[w]);
+            let mid = self.bstart[nu.layer] + (nu.lsize.min(nw.lsize) - 1).div_euclid(2);
+            let (cu, cw) = (nu.pos + nu.box_csize() - 1, nw.pos);
+            let lines: Vec<&StackEdge> = self.between(u, w).collect();
+            let k = lines.len() as i64;
+            for (i, e) in lines.into_iter().enumerate() {
+                let at = mid - (k - 1) + 2 * i as i64;
+                let (from, to, step) = if e.src == u { (cu, cw, 1) } else { (cw, cu, -1) };
+                let end = to - step * i64::from(e.arrow);
+                let net = p.net();
+                p.line(&[self.phys(at, from), self.phys(at, end)], net, Stroke::light(e.style), Layer::Main);
+                if e.arrow {
+                    let (x, y) = self.phys(at, end);
+                    p.symbol(x, y, if step == 1 { ahead } else { back });
+                }
+                let Some(label) = &e.label else { continue };
+                let gap = cw - cu - 1;
+                if self.td {
+                    let text = label.join(" ");
+                    let l = if i == 0 { at - 1 } else { at + 1 };
+                    let (x, y) = self.phys(l, cu + 1 + (gap - width(&text)).div_euclid(2));
+                    p.text(x, y, &text);
+                } else {
+                    // The first of several lines has its label on its left.
+                    let w = label.iter().map(|t| width(t)).max().unwrap_or(0);
+                    let l = if i == 0 && k > 1 { at - 1 - w } else { at + 2 };
+                    let top = cu + 1 + (gap - label.len() as i64).div_euclid(2);
+                    for (j, t) in label.iter().enumerate() {
+                        p.text(l, top + j as i64, t);
+                    }
+                }
+            }
+        }
+        for k in 0..self.layers.len() {
+            for (i, e) in self.brackets(k).into_iter().enumerate() {
+                let lane = self.bstart[k] + self.box_len(k) + 1 + 2 * i as i64;
+                let (u, w) = self.ends(e);
+                let far = |n: usize| self.bstart[k] + self.nodes[n].lsize - 1;
+                let (mut a, mut b) = ((far(u), self.bracket_at(u, true)), (far(w), self.bracket_at(w, false)));
+                if e.src != u {
+                    (a, b) = (b, a);
+                }
+                let end = (b.0 + i64::from(e.arrow), b.1);
+                let pts = [a, (lane, a.1), (lane, b.1), end].map(|(l, c)| self.phys(l, c));
+                let net = p.net();
+                p.line(&pts, net, Stroke::light(e.style), Layer::Main);
+                if e.arrow {
+                    let (x, y) = self.phys(end.0, end.1);
+                    p.symbol(x, y, home);
+                }
+                if let Some(label) = &e.label {
+                    let mid = (a.1 + b.1).div_euclid(2);
+                    let text = label.join(" ");
+                    let (x, y) =
+                        if self.td { self.phys(lane + 1, mid - width(&text) / 2) } else { self.phys(lane + 2, mid) };
+                    p.text(x, y, &text);
+                }
+            }
+        }
     }
 }
 
@@ -1060,9 +1333,21 @@ mod tests {
     #[test]
     fn break_cycles_marks_only_the_closing_edge() {
         let g = graph("a --> b\nb --> c\nc --> a\na --> d\nd --> c");
-        let (_, edges) = layer_graph(&g, &structure(&g));
+        let (_, edges, _) = layer_graph(&g, &structure(&g));
         let rev: Vec<(usize, usize)> = edges.iter().filter(|e| e.rev).map(|e| (e.src, e.dst)).collect();
         assert_eq!(rev, [(id(&g, "c"), id(&g, "a"))]);
+    }
+
+    #[test]
+    fn a_stack_is_one_node_to_cycles_and_layers() {
+        let g = graph("a --> b --> c\na --> c\n%% stack: a c");
+        let s = structure(&g);
+        assert_eq!(s.layer[id(&g, "a")], s.layer[id(&g, "c")]);
+        // Leaving the stack (a → b) and coming back (b → c) is a loop; a → c
+        // is inside the stack, so it is drawn across and not counted.
+        let (_, edges, stacked) = layer_graph(&g, &s);
+        assert_eq!(edges.iter().filter(|e| e.rev).count(), 1);
+        assert_eq!(stacked.iter().map(|e| (e.src, e.dst)).collect::<Vec<_>>(), [(id(&g, "a"), id(&g, "c"))]);
     }
 
     #[test]

@@ -93,7 +93,12 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
         let dst = if band_of[t] == b { index[&t] } else { connector(&mut g, number[&t]) };
         g.add_edge(index[&e.source().index()], dst, e.weight().clone());
     }
-    Graph { direction: Direction::LR, g, groups: graph.groups.clone() }
+    // A stack shares one layer, so it is wholly in this band or not at all.
+    let stacks = (graph.stacks.iter())
+        .filter(|st| band_of[st[0].index()] == b)
+        .map(|st| st.iter().map(|v| index[&v.index()]).collect())
+        .collect();
+    Graph { direction: Direction::LR, g, groups: graph.groups.clone(), stacks }
 }
 
 /// Split the layers into consecutive LR bands that each fit, choosing the

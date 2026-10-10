@@ -213,3 +213,39 @@ fn unrelated_edges_are_never_drawn_as_joined() {
     assert!(!out.contains('┼'), "\n{out}");
     assert!(out.contains('╂'), "crossings are marked:\n{out}");
 }
+
+/// (row, column) of the first cell where `s` starts.
+fn find(out: &str, s: &str) -> (usize, usize) {
+    let at = |(y, l): (usize, &str)| l.find(s).map(|x| (y, l[..x].chars().count()));
+    out.lines().enumerate().find_map(at).unwrap_or_else(|| panic!("{s:?} not in\n{out}"))
+}
+
+#[test]
+fn stacked_boxes_sit_in_one_column_joined_straight() {
+    let out = render(&parse("flowchart LR\nx --> a\nx --> b\na --> b\n%% stack: a b").unwrap(), None, false);
+    let ((ya, xa), (yb, xb)) = (find(&out, "│ a"), find(&out, "│ b"));
+    assert!(ya < yb && xa == xb, "a above b, same column:\n{out}");
+    assert!(out.contains('▼'), "a → b runs down:\n{out}");
+    // The order is the stack's: b first means b on top, and a → b runs up.
+    let out = render(&parse("flowchart LR\nx --> a\nx --> b\na --> b\n%% stack: b a").unwrap(), None, false);
+    assert!(find(&out, "│ b").0 < find(&out, "│ a").0 && out.contains('▲'), "\n{out}");
+}
+
+#[test]
+fn a_stacked_two_way_pair_has_no_outer_loop() {
+    let src = "flowchart LR\na --> b\na --> c\nb --> c\nc --> b";
+    let looped = render(&parse(src).unwrap(), None, false);
+    let stacked = render(&parse(&format!("{src}\n%% stack: b c")).unwrap(), None, false);
+    assert!(looped.lines().count() > find(&looped, "│ c").0 + 2, "unstacked, c → b loops below:\n{looped}");
+    assert_eq!(stacked.lines().count(), find(&stacked, "│ c").0 + 2, "nothing below c:\n{stacked}");
+    assert!(stacked.contains('▼') && stacked.contains('▲'), "\n{stacked}");
+}
+
+#[test]
+fn stacks_run_across_in_td_and_skip_with_a_bracket() {
+    let out = render(&parse("flowchart TD\nx --> a & b\na -->|go| b\n%% stack: a b").unwrap(), None, false);
+    assert!(same_row(&out, "│ a", "│ b") && out.contains('►') && out.contains("go"), "\n{out}");
+    // a → c skips over b: out of a's far side, along a lane, into c's.
+    let out = render(&parse("flowchart LR\nx --> a & b & c\na --> c\n%% stack: a b c").unwrap(), None, false);
+    assert!(out.contains('◄'), "\n{out}");
+}

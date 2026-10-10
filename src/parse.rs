@@ -4,11 +4,12 @@ use crate::model::{Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
 use crate::Error;
 use petgraph::graph::{DiGraph, NodeIndex};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 /// `line` without a trailing `%% comment`. A line that starts with `%%` is
-/// left alone: it is a whole-line comment or a `%% highlight:` directive.
+/// left alone: it is a whole-line comment or a `%% highlight:` / `%% stack:`
+/// directive.
 pub(crate) fn strip_comment(line: &str) -> &str {
     let at = line.match_indices("%%").map(|(i, _)| i).find(|&i| i > 0 && line[..i].ends_with(char::is_whitespace));
     at.map_or(line, |i| line[..i].trim_end())
@@ -237,10 +238,16 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
     // Subgraph ids (id, line): a node may not reuse one.
     let mut group_ids: Vec<(String, usize)> = Vec::new();
     let mut highlight: Option<(usize, Vec<String>)> = None;
+    let mut stacks: Vec<(usize, Vec<String>)> = Vec::new();
     for (lineno, raw) in text.lines().enumerate() {
         let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
-        if let Some(ids) = line.strip_prefix("%%").map(str::trim).and_then(|c| c.strip_prefix("highlight:")) {
+        let directive = |name| line.strip_prefix("%%").map(str::trim).and_then(|c| c.strip_prefix(name));
+        if let Some(ids) = directive("highlight:") {
             highlight = Some((lineno + 1, crate::marks::split_ids(ids)));
+            continue;
+        }
+        if let Some(ids) = directive("stack:") {
+            stacks.push((lineno + 1, crate::marks::split_ids(ids)));
             continue;
         }
         if line.is_empty() || line.starts_with("%%") || line.starts_with('#') {
@@ -299,9 +306,40 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             format!("`{id}` is both a subgraph and a node (edges to subgraphs aren't supported)"),
         ));
     }
-    let mut graph = Graph { direction, g: p.g, groups };
+    let stacks = resolve_stacks(&p.g, &p.index, stacks)?;
+    let mut graph = Graph { direction, g: p.g, groups, stacks };
     if let Some((lineno, ids)) = highlight {
         crate::marks::highlight(&mut graph, &ids).map_err(|e| Error::at(lineno, e.message))?;
     }
     Ok(graph)
+}
+
+/// The boxes of each `%% stack:` line (line, ids), checked: every id is a
+/// node, a stack has two or more, no box is stacked twice, and a stack's
+/// boxes are all in the same subgraph (or none).
+fn resolve_stacks(
+    g: &DiGraph<NodeDef, EdgeDef>,
+    index: &HashMap<String, NodeIndex>,
+    lines: Vec<(usize, Vec<String>)>,
+) -> Result<Vec<Vec<NodeIndex>>, Error> {
+    let mut seen = HashSet::new();
+    let mut stacks = Vec::new();
+    for (line, ids) in lines {
+        if ids.len() < 2 {
+            return Err(Error::at(line, "`%% stack:` needs two or more boxes"));
+        }
+        let mut stack = Vec::new();
+        for id in &ids {
+            let &v = index.get(id).ok_or_else(|| Error::at(line, format!("stack: no node {id:?}")))?;
+            if !seen.insert(v) {
+                return Err(Error::at(line, format!("stack: {id:?} is already in a stack")));
+            }
+            stack.push(v);
+        }
+        if stack.iter().any(|&v| g[v].group != g[stack[0]].group) {
+            return Err(Error::at(line, "stack: its boxes must all be in the same subgraph"));
+        }
+        stacks.push(stack);
+    }
+    Ok(stacks)
 }

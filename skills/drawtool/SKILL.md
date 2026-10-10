@@ -34,6 +34,7 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 | `wireframe Title` then indented `header:`, `input:`, `button:`, `card X:`, `row:`, `- item \| $1` | screen mockup (see README) |
 | `subgraph api [API server]` ... `end` | dashed group frame (layers, services, vendors) |
 | `%% highlight: a, b, c` | draw that path thick (the branch a request takes, where a bug is) |
+| `%% stack: save cache audit` | those boxes in one column, joined by short straight arrows: side effects (cache, log, metrics) under the step that causes them, or a pair that talks both ways (push/ack) instead of a loop round the outside |
 | `%% comment` | comment |
 | `sequenceDiagram` then `a->>b: msg`, `b-->>a: reply` | sequence diagram (see below) |
 

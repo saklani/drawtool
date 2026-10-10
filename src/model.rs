@@ -1,6 +1,6 @@
 //! The parsed flowchart: what every stage after parsing works on.
 
-use petgraph::graph::DiGraph;
+use petgraph::graph::{DiGraph, NodeIndex};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction {
@@ -88,4 +88,7 @@ pub struct Graph {
     pub direction: Direction,
     pub g: DiGraph<NodeDef, EdgeDef>,
     pub groups: Vec<Group>,
+    /// `%% stack:` lines: boxes drawn in one column, directly under each
+    /// other (beside each other in TD), in this order.
+    pub stacks: Vec<Vec<NodeIndex>>,
 }

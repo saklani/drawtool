@@ -158,3 +158,27 @@ fn the_first_subgraph_to_close_claims_a_node() {
     assert_eq!(group("a\nsubgraph s\na\nend", "a").as_deref(), Some("s"));
     assert_eq!(group("subgraph s\nstyle a fill:#f00\nend", "a"), None);
 }
+
+#[test]
+fn stack_lines_list_boxes_in_order() {
+    let g = parse("a --> b --> c\n%% stack: c, a").unwrap();
+    let id = |i: &NodeIndex| g.g[*i].id.clone();
+    assert_eq!(g.stacks.iter().map(|st| st.iter().map(id).collect::<Vec<_>>()).collect::<Vec<_>>(), [["c", "a"]]);
+    // To Mermaid it's a comment.
+    assert_eq!(parse("a --> b\n%% stack: a b").unwrap().g.edge_count(), 1);
+}
+
+#[test]
+fn bad_stack_lines_name_their_line() {
+    let fail = |src: &str| {
+        let e = parse(src).unwrap_err();
+        (e.line, e.message)
+    };
+    let (line, message) = fail("a --> b\n%% stack: a zz");
+    assert!(line == Some(2) && message.contains("no node \"zz\""), "{message}");
+    assert!(fail("a --> b\n%% stack: a").1.contains("two or more"));
+    assert!(fail("a --> b\n%% stack: a b a").1.contains("already in a stack"));
+    let (line, message) = fail("a --> b --> c\n%% stack: a b\n%% stack: c b");
+    assert!(line == Some(3) && message.contains("already in a stack"), "{message}");
+    assert!(fail("subgraph s\na\nend\na --> b\n%% stack: a b").1.contains("same subgraph"));
+}

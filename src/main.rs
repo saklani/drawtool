@@ -20,6 +20,11 @@ Syntax (a subset of Mermaid flowcharts):
   subgraph api [API server]             %% dashed group frame
     mw --> route
   end
+  %% stack: save cache
+
+`%% stack: a b c` draws those boxes in one column, in that order (in TD, one row),
+joined by short straight arrows: side effects under the step that causes them, or a
+pair that talks both ways. Mermaid reads it as a comment.
 
 Shapes: [box]  (rounded)  {decision}  ([stadium])  [(database)]  [[sub]]
 Other Mermaid shapes keep their label and are drawn as the nearest of these.

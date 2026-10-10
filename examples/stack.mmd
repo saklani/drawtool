@@ -1,0 +1,11 @@
+flowchart LR
+%% Side effects hang under the step that causes them, and a pair that talks
+%% both ways shares a column instead of looping round the outside.
+api[POST /orders] --> validate --> save[save order] --> respond[201 Created]
+save -->|write| cache[(cache)]
+save -.->|async| audit[audit log]
+%% stack: save cache audit
+respond --> sync[sync worker]
+sync -->|push| ledger[(ledger)]
+ledger -->|ack| sync
+%% stack: sync ledger

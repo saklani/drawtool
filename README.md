@@ -232,6 +232,45 @@ matching nodes by id: `+` added (heavy), `-` removed (dashed/dotted), `~` relabe
              ╚═══════════╝        └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
+## Stacking boxes
+
+A `%% stack: a b c` line draws those boxes in one column, in that order (one row in TD), and
+joins edges between neighbours with short straight arrows instead of routing them through the
+layers. Use it to hang side effects under the step that causes them, or for a pair that talks
+both ways, which would otherwise loop round the outside. Edges between boxes that aren't
+neighbours in the stack run in a bracket beside it. Mermaid reads the line as a comment.
+
+```
+flowchart LR
+api[POST /orders] --> validate --> save[save order] --> respond[201 Created]
+save -->|write| cache[(cache)]
+save -.->|async| audit[audit log]
+%% stack: save cache audit
+respond --> sync[sync worker]
+sync -->|push| ledger[(ledger)]
+ledger -->|ack| sync
+%% stack: sync ledger
+```
+
+```
+                                ┌────────────┐                            ┌─────────────┐
+┌──────────────┐  ┌──────────┐  │            │          ┌─────────────┐ ┌►│ sync worker │
+│ POST /orders ├─►│ validate ├─►│ save order ├─────────►│ 201 Created ├─┘ └──┬──────────┘
+└──────────────┘  └──────────┘  │            ├┄┐        └─────────────┘ push │ ▲ ack
+                                └───┬────────┘ ┆                             ▼ │
+                                    │ write    ┆                          ╒════╧═══╕
+                                    ▼          ┆                          │ ledger │
+                                ╒═══════╕      ┆ async                    ╘════════╛
+                                │ cache │      ┆
+                                ╘═══════╛      ┆
+                                               ┆
+                                ┌───────────┐  ┆
+                                │           │◄┄┘
+                                │ audit log │
+                                │           │
+                                └───────────┘
+```
+
 ## Wireframes
 
 Start with `wireframe [title]` to sketch a screen instead of a flow. Elements are one per
@@ -322,6 +361,7 @@ a[x] --> b; b --> c           %% `;` separates statements
 subgraph api [API server]     %% dashed group frame
   mw --> route
 end
+%% stack: save cache
 ```
 
 Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`. Other Mermaid
@@ -334,7 +374,7 @@ node belongs to the innermost subgraph that mentions it.
 Not supported, and rejected with an error rather than drawn wrong: `RL`/`BT` directions, `<-->`,
 `--o`, `--x`, `~~~`, and edges to a subgraph. drawtool also accepts a few things Mermaid doesn't:
 no `flowchart` line (drawn left-to-right), `%%` comments at the end of a line, `#` comment lines,
-and `%% highlight: a, b` (a plain comment to Mermaid).
+and `%% highlight: a, b` and `%% stack: a b` (plain comments to Mermaid).
 
 In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).
 

@@ -1,33 +1,10 @@
-use drawtool::{
-    diff, highlight, is_sequence, is_wireframe, marks::split_ids, parse, parse_sequence, parse_wireframe, render_fit,
-    render_sequence_fit, render_wireframe_fit, Direction,
-};
+use clap::Parser;
+use drawtool::{diff, highlight, is_sequence, is_wireframe, marks::split_ids, parse, parse_sequence, parse_wireframe};
+use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit, Direction};
 use std::io::Read;
 use std::process::ExitCode;
 
-const HELP: &str = "\
-Render Mermaid-style flowcharts, sequence diagrams and UI wireframes in the terminal.
-
-Usage: drawtool [OPTIONS] [FILE]
-
-Arguments:
-  [FILE]  diagram source file (default: stdin)
-
-Options:
-  -a, --ascii            plain ASCII output
-  -d, --direction <DIR>  override layout direction: TD or LR
-  -w, --max-width <N>    column budget (default: $COLUMNS, else the terminal's
-                         width, else 120; 0 = unlimited).
-                         Too-wide diagrams get their labels wrapped; LR ones are
-                         then broken into bands joined by numbered connectors.
-                         The direction never changes on its own.
-      --highlight <IDS>  draw a path thick, e.g. --highlight req,auth,db
-                         (in a file: a line `%% highlight: req, auth, db`)
-      --diff <BEFORE>    show how BEFORE became FILE: + added (thick),
-                         - removed (dashed), ~ relabelled
-  -h, --help             print help
-  -V, --version          print version
-
+const SYNTAX: &str = "\
 Syntax (a subset of Mermaid flowcharts):
   flowchart LR              # LR = left-to-right (default), TD = top-down
   req[HTTP request] --> parse(parse_body)
@@ -60,28 +37,56 @@ Wireframes (start with `wireframe [title] [width=N]`, indent children):
   - item | $4.50                toggle: Wi-Fi = on   checkbox: x = on   radio: *a | b
 ";
 
-fn fail(msg: &str) -> ExitCode {
-    eprintln!("drawtool: {msg}");
-    ExitCode::from(2)
+/// Render Mermaid-style flowcharts, sequence diagrams and UI wireframes in the terminal.
+#[derive(Parser)]
+#[command(version, after_help = SYNTAX)]
+struct Args {
+    /// Diagram source file (default: stdin)
+    file: Option<String>,
+    /// Plain ASCII output
+    #[arg(short, long)]
+    ascii: bool,
+    /// Override layout direction: TD or LR
+    #[arg(short, long, value_parser = direction)]
+    direction: Option<Direction>,
+    /// Column budget (default: $COLUMNS, else the terminal's width, else 120; 0 = unlimited).
+    /// Too-wide diagrams get their labels wrapped; LR ones are then broken into
+    /// bands. The direction never changes on its own.
+    #[arg(short = 'w', long, value_name = "N")]
+    max_width: Option<usize>,
+    /// Draw a path thick, e.g. --highlight req,auth,db (in a file: `%% highlight: req, auth, db`)
+    #[arg(long, value_name = "IDS")]
+    highlight: Option<String>,
+    /// Show how BEFORE became FILE: + added (thick), - removed (dashed), ~ relabelled
+    #[arg(long, value_name = "BEFORE")]
+    diff: Option<String>,
+}
+
+fn direction(s: &str) -> Result<Direction, String> {
+    match s.to_uppercase().as_str() {
+        "TD" | "TB" => Ok(Direction::TD),
+        "LR" => Ok(Direction::LR),
+        _ => Err("use TD or LR".to_string()),
+    }
 }
 
 /// `$COLUMNS`, else the width of whichever of stdout/stderr is a terminal
 /// (so `drawtool | less` still fits the window), else 120.
 fn default_width() -> usize {
-    if let Some(n) = std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()) {
-        return n;
-    }
-    let tty = terminal_size::terminal_size_of(std::io::stdout())
-        .or_else(|| terminal_size::terminal_size_of(std::io::stderr()));
-    match tty {
-        Some((terminal_size::Width(w), _)) => w as usize,
-        None => 120,
-    }
+    let tty = || {
+        terminal_size::terminal_size_of(std::io::stdout())
+            .or_else(|| terminal_size::terminal_size_of(std::io::stderr()))
+    };
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .or_else(|| tty().map(|(w, _)| w.0 as usize))
+        .unwrap_or(120)
 }
 
-/// Read a diagram from `path`, or stdin when `None`.
+/// Read a diagram from `path`, or stdin when `None` or `-`.
 fn read_source(path: Option<&str>) -> Result<String, String> {
-    match path {
+    match path.filter(|p| *p != "-") {
         Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")),
         None => {
             let mut t = String::new();
@@ -91,123 +96,44 @@ fn read_source(path: Option<&str>) -> Result<String, String> {
     }
 }
 
-fn main() -> ExitCode {
-    let mut ascii = false;
-    let mut direction = None;
-    let mut file: Option<String> = None;
-    let mut max_width = default_width();
-    let mut path: Option<Vec<String>> = None;
-    let mut before: Option<String> = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        let (flag, inline) = match arg.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
-            _ => (arg.clone(), None),
-        };
-        match flag.as_str() {
-            "-h" | "--help" => {
-                print!("{HELP}");
-                return ExitCode::SUCCESS;
-            }
-            "-V" | "--version" => {
-                println!("drawtool {}", env!("CARGO_PKG_VERSION"));
-                return ExitCode::SUCCESS;
-            }
-            "-a" | "--ascii" => ascii = true,
-            "-d" | "--direction" => {
-                let Some(v) = inline.or_else(|| args.next()) else {
-                    return fail("--direction needs a value (TD or LR)");
-                };
-                direction = match v.to_uppercase().as_str() {
-                    "TD" | "TB" => Some(Direction::TD),
-                    "LR" => Some(Direction::LR),
-                    _ => return fail(&format!("invalid direction {v:?} (use TD or LR)")),
-                };
-            }
-            "-w" | "--max-width" => {
-                let Some(v) = inline.or_else(|| args.next()) else {
-                    return fail("--max-width needs a number");
-                };
-                let Ok(n) = v.parse() else {
-                    return fail(&format!("invalid --max-width {v:?}"));
-                };
-                max_width = n;
-            }
-            "--highlight" => {
-                let Some(v) = inline.or_else(|| args.next()) else {
-                    return fail("--highlight needs node ids, e.g. --highlight a,b,c");
-                };
-                path = Some(split_ids(&v));
-            }
-            "--diff" => {
-                let Some(v) = inline.or_else(|| args.next()) else {
-                    return fail("--diff needs the BEFORE file");
-                };
-                before = Some(v);
-            }
-            "-" => file = None,
-            f if f.starts_with('-') => return fail(&format!("unknown option {f} (see --help)")),
-            _ => file = Some(arg),
-        }
+fn run(args: Args) -> Result<(String, usize, bool, usize), String> {
+    let width = args.max_width.unwrap_or_else(default_width);
+    let text = read_source(args.file.as_deref())?;
+    let marks = args.diff.is_some() || args.highlight.is_some();
+    if (is_wireframe(&text) || is_sequence(&text)) && marks {
+        return Err("--diff and --highlight only work on flowcharts".to_string());
     }
-
-    let text = match read_source(file.as_deref()) {
-        Ok(t) => t,
-        Err(e) => return fail(&e),
-    };
     if is_wireframe(&text) {
-        if before.is_some() || path.is_some() {
-            return fail("--diff and --highlight only work on flowcharts");
-        }
-        return match parse_wireframe(&text) {
-            Ok(wf) => {
-                let fitted = render_wireframe_fit(&wf, ascii, max_width);
-                if !fitted.fits {
-                    eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
-                }
-                println!("{}", fitted.text);
-                ExitCode::SUCCESS
-            }
-            Err(e) => fail(&e),
-        };
+        let f = render_wireframe_fit(&parse_wireframe(&text)?, args.ascii, width);
+        return Ok((f.text, f.width, f.fits, width));
     }
     if is_sequence(&text) {
-        if before.is_some() || path.is_some() {
-            return fail("--diff and --highlight only work on flowcharts");
-        }
-        return match parse_sequence(&text) {
-            Ok(seq) => {
-                let fitted = render_sequence_fit(&seq, ascii, max_width);
-                if !fitted.fits {
-                    eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
-                }
-                println!("{}", fitted.text);
-                ExitCode::SUCCESS
+        let f = render_sequence_fit(&parse_sequence(&text)?, args.ascii, width);
+        return Ok((f.text, f.width, f.fits, width));
+    }
+    let mut graph = parse(&text)?;
+    if let Some(before) = &args.diff {
+        graph = diff(&parse(&read_source(Some(before))?).map_err(|e| format!("{before}: {e}"))?, &graph);
+    }
+    if let Some(ids) = &args.highlight {
+        highlight(&mut graph, &split_ids(ids))?;
+    }
+    let f = render_fit(&graph, args.direction.unwrap_or(graph.direction), args.ascii, width);
+    Ok((f.text, f.width, f.fits, width))
+}
+
+fn main() -> ExitCode {
+    match run(Args::parse()) {
+        Ok((text, width, fits, budget)) => {
+            if !fits {
+                eprintln!("drawtool: note: {width} columns wide, over the {budget}-column budget");
             }
-            Err(e) => fail(&e),
-        };
-    }
-    let mut graph = match parse(&text) {
-        Ok(g) => g,
-        Err(e) => return fail(&e),
-    };
-    if let Some(before) = before {
-        let old = match read_source(Some(&before)).and_then(|t| parse(&t).map_err(|e| format!("{before}: {e}"))) {
-            Ok(g) => g,
-            Err(e) => return fail(&e),
-        };
-        graph = diff(&old, &graph);
-    }
-    if let Some(path) = path {
-        if let Err(e) = highlight(&mut graph, &path) {
-            return fail(&e);
+            println!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("drawtool: {e}");
+            ExitCode::from(2)
         }
     }
-    let wanted = direction.unwrap_or(graph.direction);
-    let fitted = render_fit(&graph, wanted, ascii, max_width);
-    if !fitted.fits {
-        eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
-    }
-    println!("{}", fitted.text);
-    ExitCode::SUCCESS
 }

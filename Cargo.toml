@@ -6,6 +6,7 @@ description = "Render Mermaid-style flowcharts as box diagrams in the terminal"
 license = "MIT"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode"] }
 terminal_size = "0.4"
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }

@@ -7,6 +7,8 @@ use crate::layout::{node_layers, render, scene, Scene};
 use crate::model::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::paint::{Layer, Painter, Pt, Stroke};
 use crate::text::{block_width, first_fit, wrap, Fit};
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Label wrap widths tried in order; `None` leaves labels as written.
@@ -17,8 +19,8 @@ const WRAPS: [Option<usize>; 4] = [None, Some(24), Some(16), Some(12)];
 pub fn wrap_labels(graph: &Graph, max: usize) -> Graph {
     let mut g = graph.clone();
     let wrap_all = |lines: &mut Vec<String>| *lines = lines.iter().flat_map(|l| wrap(l, max, false)).collect();
-    g.nodes.iter_mut().for_each(|n| wrap_all(&mut n.lines));
-    g.edges.iter_mut().filter_map(|e| e.label.as_mut()).for_each(wrap_all);
+    g.g.node_weights_mut().for_each(|n| wrap_all(&mut n.lines));
+    g.g.edge_weights_mut().filter_map(|e| e.label.as_mut()).for_each(wrap_all);
     g
 }
 
@@ -44,12 +46,18 @@ fn connector_label(n: usize, ascii: bool) -> String {
     }
 }
 
+/// The edges between different bands, as (source, target) indices.
+fn crossing(graph: &Graph, band_of: &[usize]) -> Vec<(usize, usize)> {
+    let ends = graph.g.edge_references().map(|e| (e.source().index(), e.target().index()));
+    ends.filter(|&(s, t)| band_of[s] != band_of[t]).collect()
+}
+
 /// Connector number for every node that an edge from another band enters.
 fn connector_numbers(graph: &Graph, band_of: &[usize]) -> HashMap<usize, usize> {
     let mut number = HashMap::new();
-    for e in graph.edges.iter().filter(|e| band_of[e.src] != band_of[e.dst]) {
+    for (_, t) in crossing(graph, band_of) {
         let next = number.len() + 1;
-        number.entry(e.dst).or_insert(next);
+        number.entry(t).or_insert(next);
     }
     number
 }
@@ -58,33 +66,32 @@ fn connector_numbers(graph: &Graph, band_of: &[usize]) -> HashMap<usize, usize> 
 /// connector wherever an edge leaves or enters the band.
 fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph {
     let number = connector_numbers(graph, band_of);
-    let (mut nodes, mut edges, mut connectors) = (Vec::new(), Vec::new(), HashMap::new());
-    let mut connector = |nodes: &mut Vec<NodeDef>, n: usize| {
+    let (mut g, mut connectors) = (DiGraph::new(), HashMap::new());
+    let mut connector = |g: &mut DiGraph<NodeDef, EdgeDef>, n: usize| {
         *connectors.entry(n).or_insert_with(|| {
-            nodes.push(NodeDef::new(&format!("\0c{n}"), vec![connector_label(n, ascii)], Shape::Round));
-            nodes.len() - 1
+            g.add_node(NodeDef::new(&format!("\0c{n}"), vec![connector_label(n, ascii)], Shape::Round))
         })
     };
-    let mut entered = HashSet::new();
-    for e in graph.edges.iter().filter(|e| band_of[e.dst] == b && band_of[e.src] != b) {
-        if entered.insert(e.dst) {
-            let c = connector(&mut nodes, number[&e.dst]);
-            edges.push(EdgeDef { src: c, dst: e.dst, label: None, style: Style::Solid, arrow: true });
+    // In-connectors come first, one per node entered from another band.
+    let mut entered = Vec::new();
+    for (_, t) in crossing(graph, band_of).into_iter().filter(|&(_, t)| band_of[t] == b) {
+        if !entered.iter().any(|&(_, u)| u == t) {
+            entered.push((connector(&mut g, number[&t]), t));
         }
     }
     let mut index = HashMap::new();
-    for (i, n) in graph.nodes.iter().enumerate().filter(|(i, _)| band_of[*i] == b) {
-        index.insert(i, nodes.len());
-        nodes.push(n.clone());
+    for v in graph.g.node_indices().filter(|v| band_of[v.index()] == b) {
+        index.insert(v.index(), g.add_node(graph.g[v].clone()));
     }
-    for e in &mut edges {
-        e.dst = index[&e.dst];
+    for (c, t) in entered {
+        g.add_edge(c, index[&t], EdgeDef { label: None, style: Style::Solid, arrow: true });
     }
-    for e in graph.edges.iter().filter(|e| band_of[e.src] == b) {
-        let dst = if band_of[e.dst] == b { index[&e.dst] } else { connector(&mut nodes, number[&e.dst]) };
-        edges.push(EdgeDef { src: index[&e.src], dst, ..e.clone() });
+    for e in graph.g.edge_references().filter(|e| band_of[e.source().index()] == b) {
+        let t = e.target().index();
+        let dst = if band_of[t] == b { index[&t] } else { connector(&mut g, number[&t]) };
+        g.add_edge(index[&e.source().index()], dst, e.weight().clone());
     }
-    Graph { direction: Direction::LR, nodes, edges, groups: graph.groups.clone() }
+    Graph { direction: Direction::LR, g, groups: graph.groups.clone() }
 }
 
 /// Split the layers into consecutive LR bands that each fit, choosing the
@@ -110,8 +117,9 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     // around like text) and three per subgraph it splits.
     let at: Vec<usize> = layers.iter().map(|l| distinct.binary_search(l).unwrap_or(0)).collect();
     let cut_cost = |p: usize| {
-        let crossing = graph.edges.iter().filter(|e| (at[e.src] < p) != (at[e.dst] < p)).count();
-        let has = |g, before| graph.nodes.iter().zip(&at).any(|(n, &a)| n.group == Some(g) && (a < p) == before);
+        let before = |v: NodeIndex| at[v.index()] < p;
+        let crossing = graph.g.edge_references().filter(|e| before(e.source()) != before(e.target())).count();
+        let has = |g, side| graph.g.node_weights().zip(&at).any(|(n, &a)| n.group == Some(g) && (a < p) == side);
         let split = (0..graph.groups.len()).filter(|&g| has(g, true) && has(g, false)).count();
         crossing + 3 * split
     };
@@ -152,11 +160,11 @@ fn join_bands(graph: &Graph, band_of: &[usize], graphs: &[Graph], scenes: Vec<Sc
     let numbers = connector_numbers(graph, band_of);
     let nb = graphs.len();
     let (mut outs, mut ins) = (vec![HashSet::new(); nb], vec![HashSet::new(); nb]);
-    for e in graph.edges.iter().filter(|e| band_of[e.src] != band_of[e.dst]) {
-        outs[band_of[e.src]].insert(numbers[&e.dst]);
-        ins[band_of[e.dst]].insert(numbers[&e.dst]);
+    for (s, t) in crossing(graph, band_of) {
+        outs[band_of[s]].insert(numbers[&t]);
+        ins[band_of[t]].insert(numbers[&t]);
     }
-    let connector = |b: usize, k: usize| graphs[b].nodes.iter().position(|n| n.id == format!("\0c{k}"));
+    let connector = |b: usize, k: usize| graphs[b].g.node_weights().position(|n| n.id == format!("\0c{k}"));
     let mut canvas = Painter::new(ascii);
     canvas.mark_crossings = true;
     // The next free row, and the previous band's boxes where they sit on the canvas.

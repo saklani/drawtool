@@ -1,12 +1,14 @@
 //! The flowchart parser, input by input.
 
 use drawtool::{parse, Direction, Shape, Style};
+use petgraph::graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::EdgeRef;
 
 /// (style, arrow, label) of the single edge in `src`.
 fn edge(src: &str) -> (Style, bool, Option<String>) {
     let g = parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
-    assert_eq!(g.edges.len(), 1, "{src:?}");
-    let e = &g.edges[0];
+    assert_eq!(g.g.edge_count(), 1, "{src:?}");
+    let e = &g.g[EdgeIndex::new(0)];
     (e.style, e.arrow, e.label.as_ref().map(|l| l.join("\n")))
 }
 
@@ -60,9 +62,9 @@ fn every_shape() {
     ];
     for (src, shape) in cases {
         let g = parse(src).unwrap();
-        assert_eq!(g.nodes[0].shape, shape, "{src:?}");
+        assert_eq!(g.g[NodeIndex::new(0)].shape, shape, "{src:?}");
         let label = src.trim_start_matches('a').trim_matches(|c: char| !c.is_alphanumeric());
-        assert_eq!(g.nodes[0].lines, vec![if label.is_empty() { "a" } else { label }], "{src:?}");
+        assert_eq!(g.g[NodeIndex::new(0)].lines, vec![if label.is_empty() { "a" } else { label }], "{src:?}");
     }
 }
 
@@ -70,23 +72,23 @@ fn every_shape() {
 fn labels_quotes_and_line_breaks() {
     // As in Mermaid: only double quotes are stripped and only `<br>` breaks a line.
     let g = parse("a[\"quoted label\"]\nb[one<br/>two\\nthree]\nc['single']").unwrap();
-    let lines: Vec<Vec<&str>> = g.nodes.iter().map(|n| n.lines.iter().map(String::as_str).collect()).collect();
+    let lines: Vec<Vec<&str>> = g.g.node_weights().map(|n| n.lines.iter().map(String::as_str).collect()).collect();
     assert_eq!(lines, vec![vec!["quoted label"], vec!["one", "two\\nthree"], vec!["'single'"]]);
 }
 
 #[test]
 fn bare_ids_are_their_own_label_and_the_last_label_wins() {
     let g = parse("a --> b\na[First] --> c\na(Second)\na --> d").unwrap();
-    assert_eq!(g.nodes[0].lines, vec!["Second"]);
-    assert_eq!(g.nodes[0].shape, Shape::Round);
-    assert_eq!(g.nodes[1].lines, vec!["b"]);
+    assert_eq!(g.g[NodeIndex::new(0)].lines, vec!["Second"]);
+    assert_eq!(g.g[NodeIndex::new(0)].shape, Shape::Round);
+    assert_eq!(g.g[NodeIndex::new(1)].lines, vec!["b"]);
 }
 
 #[test]
 fn fan_out_fan_in_and_chains() {
     let pairs = |src: &str| -> Vec<(String, String)> {
         let g = parse(src).unwrap();
-        g.edges.iter().map(|e| (g.nodes[e.src].id.clone(), g.nodes[e.dst].id.clone())).collect()
+        g.g.edge_references().map(|e| (g.g[e.source()].id.clone(), g.g[e.target()].id.clone())).collect()
     };
     let p = |a: &str, b: &str| (a.to_string(), b.to_string());
     assert_eq!(pairs("a --> b & c"), vec![p("a", "b"), p("a", "c")]);
@@ -111,9 +113,9 @@ fn headers_comments_and_ignored_lines() {
         assert_eq!(parse(src).unwrap().direction, dir, "{src:?}");
     }
     let g = parse("%% a comment\na --> b %% trailing\nclassDef x fill:#f00\nclass a x\nb --> c;").unwrap();
-    assert_eq!((g.nodes.len(), g.edges.len()), (3, 2));
+    assert_eq!((g.g.node_count(), g.g.edge_count()), (3, 2));
     // As in Mermaid, `style` declares the node it styles.
-    assert_eq!(parse("a --> b\nstyle c fill:#0f0").unwrap().nodes.len(), 3);
+    assert_eq!(parse("a --> b\nstyle c fill:#0f0").unwrap().g.node_count(), 3);
     // A subgraph's own `direction` doesn't change the diagram's.
     assert_eq!(parse("flowchart LR\nsubgraph s\ndirection TD\na\nend").unwrap().direction, Direction::LR);
 }
@@ -147,7 +149,7 @@ fn mermaid_syntax_outside_the_subset_is_an_error() {
 fn the_first_subgraph_to_close_claims_a_node() {
     let group = |src: &str, id: &str| {
         let g = parse(src).unwrap();
-        g.nodes.iter().find(|n| n.id == id).unwrap().group.map(|i| g.groups[i].title.clone())
+        g.g.node_weights().find(|n| n.id == id).unwrap().group.map(|i| g.groups[i].title.clone())
     };
     let nested = "subgraph outer\na --> b\nsubgraph inner\nb\nend\nend";
     assert_eq!(group(nested, "a").as_deref(), Some("outer"));

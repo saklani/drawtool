@@ -2,6 +2,7 @@
 
 use crate::model::{Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
 use crate::Error;
+use petgraph::graph::{DiGraph, NodeIndex};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -118,32 +119,31 @@ fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
 type Fail = (usize, String);
 
 struct Parser {
-    nodes: Vec<NodeDef>,
-    index: HashMap<String, usize>,
-    edges: Vec<EdgeDef>,
+    g: DiGraph<NodeDef, EdgeDef>,
+    index: HashMap<String, NodeIndex>,
     /// Open `subgraph` blocks (group, line), innermost last.
     open: Vec<(usize, usize)>,
 }
 
 impl Parser {
     /// The node called `id`, added if it's new.
-    fn node_id(&mut self, id: &str) -> usize {
-        *self.index.entry(id.to_string()).or_insert_with(|| {
-            self.nodes.push(NodeDef::new(id, vec![id.to_string()], Shape::Box));
-            self.nodes.len() - 1
-        })
+    fn node_id(&mut self, id: &str) -> NodeIndex {
+        *self
+            .index
+            .entry(id.to_string())
+            .or_insert_with(|| self.g.add_node(NodeDef::new(id, vec![id.to_string()], Shape::Box)))
     }
 
     /// `id`, an optional shape with its label (the last one given wins, as
     /// in Mermaid), and an optional `:::class`, which is ignored.
-    fn node(&mut self, s: &str, pos: usize) -> Result<(usize, usize), Fail> {
+    fn node(&mut self, s: &str, pos: usize) -> Result<(NodeIndex, usize), Fail> {
         let m = PATTERNS.id.find(&s[pos..]).ok_or_else(|| (pos, format!("expected a node id at {:?}", &s[pos..])))?;
         let id = m.as_str().split(":::").next().unwrap_or_default();
         let idx = self.node_id(id);
         // As in Mermaid, the first subgraph to close claims a node: one opened
         // inside the node's group (still open) closes first, a sibling later.
         if let Some(&(inner, _)) = self.open.last() {
-            let (open, group) = (&self.open, &mut self.nodes[idx].group);
+            let (open, group) = (&self.open, &mut self.g[idx].group);
             if group.is_none_or(|g| open.iter().any(|o| o.0 == g)) {
                 *group = Some(inner);
             }
@@ -152,7 +152,7 @@ impl Parser {
         let mut unclosed = None;
         for &(opener, closer, shape) in SHAPES.iter().filter(|sh| s[pos..].starts_with(sh.0)) {
             if let Some(end) = find_close(s, pos + opener.len(), closer) {
-                let node = &mut self.nodes[idx];
+                let node = &mut self.g[idx];
                 node.lines = label(&s[pos + opener.len()..end]);
                 node.shape = shape;
                 pos = end + closer.len();
@@ -167,7 +167,7 @@ impl Parser {
         Ok((idx, pos + PATTERNS.class_suffix.find(&s[pos..]).map_or(0, |m| m.end())))
     }
 
-    fn group(&mut self, s: &str, mut pos: usize) -> Result<(Vec<usize>, usize), Fail> {
+    fn group(&mut self, s: &str, mut pos: usize) -> Result<(Vec<NodeIndex>, usize), Fail> {
         let mut ids = Vec::new();
         loop {
             let (id, p) = self.node(s, skip_ws(s, pos))?;
@@ -214,7 +214,7 @@ impl Parser {
             pos = p;
             for &a in &group {
                 for &b in &nxt {
-                    self.edges.push(EdgeDef { src: a, dst: b, label: text.clone(), style, arrow });
+                    self.g.add_edge(a, b, EdgeDef { label: text.clone(), style, arrow });
                 }
             }
             group = nxt;
@@ -232,7 +232,7 @@ impl Parser {
 pub fn parse(text: &str) -> Result<Graph, Error> {
     let pats = &*PATTERNS;
     let mut direction = Direction::LR;
-    let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new(), open: Vec::new() };
+    let mut p = Parser { g: DiGraph::new(), index: HashMap::new(), open: Vec::new() };
     let mut groups: Vec<Group> = Vec::new();
     // Subgraph ids (id, line): a node may not reuse one.
     let mut group_ids: Vec<(String, usize)> = Vec::new();
@@ -299,7 +299,7 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             format!("`{id}` is both a subgraph and a node (edges to subgraphs aren't supported)"),
         ));
     }
-    let mut graph = Graph { direction, nodes: p.nodes, edges: p.edges, groups };
+    let mut graph = Graph { direction, g: p.g, groups };
     if let Some((lineno, ids)) = highlight {
         crate::marks::highlight(&mut graph, &ids).map_err(|e| Error::at(lineno, e.message))?;
     }

@@ -1,15 +1,18 @@
 //! Highlighting a path, and diffing two versions of a diagram.
 
-use drawtool::{diff, highlight, parse, Graph, Mark, Style};
+use drawtool::{diff, highlight, parse, EdgeDef, Graph, Mark, Style};
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 
 fn node<'g>(g: &'g Graph, id: &str) -> &'g drawtool::NodeDef {
-    g.nodes.iter().find(|n| n.id == id).unwrap_or_else(|| panic!("no node {id}"))
+    g.g.node_weights().find(|n| n.id == id).unwrap_or_else(|| panic!("no node {id}"))
 }
 
 /// (source id, target id, style, label) of every edge.
 fn edges(g: &Graph) -> Vec<(String, String, Style, Option<String>)> {
-    let id = |i: usize| g.nodes[i].id.clone();
-    g.edges.iter().map(|e| (id(e.src), id(e.dst), e.style, e.label.as_ref().map(|l| l.join("\n")))).collect()
+    let id = |v: NodeIndex| g.g[v].id.clone();
+    let label = |e: &EdgeDef| e.label.as_ref().map(|l| l.join("\n"));
+    g.g.edge_references().map(|e| (id(e.source()), id(e.target()), e.weight().style, label(e.weight()))).collect()
 }
 
 fn diffed(before: &str, after: &str) -> Graph {

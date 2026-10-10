@@ -19,11 +19,15 @@
 //! enters its target from the channel before it with an ordinary arrowhead.
 //! Everything about them is in the "Back edges" section below.
 
-use crate::model::{Direction, Graph, Mark, Shape, Style};
+use crate::model::{Direction, EdgeDef, Graph, Mark, NodeDef, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
 use crate::text::width;
 use petgraph::algo::toposort;
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
+use petgraph::visit::{
+    depth_first_search, DfsEvent, EdgeFiltered, EdgeRef, GraphBase, GraphRef, IntoEdgesDirected, IntoNeighbors,
+    Visitable,
+};
 use petgraph::Direction::{Incoming, Outgoing};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -162,41 +166,74 @@ fn pava(ys: &[f64], ws: &[f64]) -> Vec<f64> {
     blocks.iter().flat_map(|&(v, _, c)| std::iter::repeat_n(v, c)).collect()
 }
 
-/// Mark edges that close a cycle (found by depth-first search) as reversed.
-/// Our own DFS rather than petgraph's: it visits out-edges in source order,
-/// which decides which edge of a cycle counts as the back edge.
-fn break_cycles(n: usize, edges: &mut [Edge]) {
-    let mut out = vec![Vec::new(); n];
-    let mut indeg = vec![0; n];
-    for (i, e) in edges.iter().enumerate() {
-        out[e.src].push(i);
-        indeg[e.dst] += 1;
+/// `graph` with each node's out-edges in the order they were written:
+/// petgraph lists the newest first, and for a depth-first search the order
+/// decides which edge of a cycle is the one that closes it.
+#[derive(Clone, Copy)]
+struct SourceOrder<'a>(&'a DiGraph<NodeDef, EdgeDef>);
+
+impl GraphBase for SourceOrder<'_> {
+    type NodeId = NodeIndex;
+    type EdgeId = EdgeIndex;
+}
+
+impl Visitable for SourceOrder<'_> {
+    type Map = <DiGraph<NodeDef, EdgeDef> as Visitable>::Map;
+    fn visit_map(&self) -> Self::Map {
+        self.0.visit_map()
     }
-    let mut state = vec![0u8; n]; // 0 new, 1 on the stack, 2 done
-    for root in (0..n).filter(|&v| indeg[v] == 0).chain(0..n) {
-        if state[root] != 0 {
-            continue;
+    fn reset_map(&self, map: &mut Self::Map) {
+        self.0.reset_map(map);
+    }
+}
+
+impl GraphRef for SourceOrder<'_> {}
+
+impl IntoNeighbors for SourceOrder<'_> {
+    type Neighbors = std::iter::Rev<std::vec::IntoIter<NodeIndex>>;
+    fn neighbors(self, v: NodeIndex) -> Self::Neighbors {
+        self.0.neighbors(v).collect::<Vec<_>>().into_iter().rev()
+    }
+}
+
+/// For each edge, whether it closes a cycle: depth-first search, from the
+/// sources first and then from any node not yet reached, finds it leading
+/// back to a node still on the search path. Self-loops don't count.
+fn back_edges(graph: &Graph) -> Vec<bool> {
+    let g = &graph.g;
+    let source = |v: &NodeIndex| g.edges_directed(*v, Incoming).all(|e| e.source() == *v);
+    let mut back = HashSet::new();
+    depth_first_search(SourceOrder(g), g.node_indices().filter(source).chain(g.node_indices()), |event| {
+        if let DfsEvent::BackEdge(u, v) = event {
+            back.insert((u, v));
         }
-        state[root] = 1;
-        let mut stack = vec![(root, 0usize)];
-        while let Some(top) = stack.last_mut() {
-            let (u, idx) = *top;
-            let Some(&ei) = out[u].get(idx) else {
-                state[u] = 2;
-                stack.pop();
-                continue;
-            };
-            top.1 += 1;
-            match state[edges[ei].dst] {
-                1 => edges[ei].rev = true,
-                0 => {
-                    state[edges[ei].dst] = 1;
-                    stack.push((edges[ei].dst, 0));
-                }
-                _ => {}
+    });
+    g.edge_references().map(|e| e.source() != e.target() && back.contains(&(e.source(), e.target()))).collect()
+}
+
+/// Each node's layer: the longest path to it, ignoring back edges and
+/// self-loops, where a labelled edge spans two layers (its label sits in the
+/// one between); then sources are pulled down next to their nearest child.
+fn layers(graph: &Graph, back: &[bool]) -> Vec<usize> {
+    let forward = EdgeFiltered::from_fn(&graph.g, |e| !back[e.id().index()] && e.source() != e.target());
+    let topo = toposort(&forward, None).expect("without back edges and self-loops the graph is acyclic");
+    let span = |e: &EdgeReference<EdgeDef>| 1 + usize::from(e.weight().label.is_some());
+    let mut layer = vec![0; graph.g.node_count()];
+    for &v in &topo {
+        let after = forward.edges_directed(v, Incoming).map(|e| layer[e.source().index()] + span(&e));
+        layer[v.index()] = after.max().unwrap_or(0);
+    }
+    for &v in topo.iter().rev() {
+        if forward.edges_directed(v, Incoming).next().is_none() {
+            // A labelled edge's first child is its label, one layer on.
+            let (here, out) = (layer[v.index()], forward.edges_directed(v, Outgoing));
+            let child = |e: EdgeReference<EdgeDef>| if span(&e) == 2 { here + 1 } else { layer[e.target().index()] };
+            if let Some(nearest) = out.map(child).min() {
+                layer[v.index()] = nearest - 1;
             }
         }
     }
+    layer
 }
 
 /// Edge crossings between consecutive layers, counted as inversions with a
@@ -231,63 +268,32 @@ fn crossings(layers: &[Vec<usize>], nodes: &[Node]) -> usize {
     total
 }
 
-/// Break cycles, turn edge labels into nodes, and assign each node a layer
-/// (longest path, then sources pulled down next to their children).
+/// Layer the nodes, mark back edges, and turn edge labels into nodes.
 fn layer_graph(graph: &Graph) -> (Vec<Node>, Vec<Edge>) {
-    let mut nodes: Vec<Node> = graph
-        .nodes
-        .iter()
-        .map(|n| Node {
+    let back = back_edges(graph);
+    let mut nodes: Vec<Node> = (graph.g.node_weights().zip(layers(graph, &back)))
+        .map(|(n, layer)| Node {
             shape: n.shape,
             mark: n.mark,
+            layer,
             lane: n.group.map_or(0, |g| g + 1),
             ..Node::new(n.lines.clone(), Kind::Real)
         })
         .collect();
-    for e in graph.edges.iter().filter(|e| e.src == e.dst) {
-        nodes[e.src].looped = Some((e.style, e.arrow));
-    }
-    let mut edges: Vec<Edge> = graph
-        .edges
-        .iter()
-        .filter(|e| e.src != e.dst)
-        .map(|e| Edge {
-            src: e.src,
-            dst: e.dst,
-            label: e.label.clone(),
-            style: e.style,
-            arrow: e.arrow,
-            rev: false,
-            path: vec![],
-        })
-        .collect();
-    break_cycles(nodes.len(), &mut edges);
-
-    // The layering graph: back edges reversed, each label a node of its own
-    // between its edge's ends. Node indices match `nodes`.
-    let mut g: DiGraph<(), ()> = DiGraph::with_capacity(nodes.len(), edges.len());
-    for _ in &nodes {
-        g.add_node(());
-    }
-    for e in &mut edges {
-        e.path = if e.rev { vec![e.dst, e.src] } else { vec![e.src, e.dst] };
-        if let Some(label) = e.label.as_ref().filter(|_| !e.rev) {
-            nodes.push(Node::new(label.clone(), Kind::Label));
-            e.path.insert(1, g.add_node(()).index());
+    let mut edges = Vec::new();
+    for e in graph.g.edge_references() {
+        let (src, dst, rev, d) = (e.source().index(), e.target().index(), back[e.id().index()], e.weight());
+        if src == dst {
+            nodes[src].looped = Some((d.style, d.arrow));
+            continue;
         }
-        for w in e.path.windows(2) {
-            g.add_edge(NodeIndex::new(w[0]), NodeIndex::new(w[1]), ());
+        // The layering chain: source, label node, target (reversed for a back edge).
+        let mut path = if rev { vec![dst, src] } else { vec![src, dst] };
+        if let Some(label) = d.label.as_ref().filter(|_| !rev) {
+            nodes.push(Node { layer: nodes[src].layer + 1, ..Node::new(label.clone(), Kind::Label) });
+            path.insert(1, nodes.len() - 1);
         }
-    }
-    let topo = toposort(&g, None).expect("back edges are reversed, so the layering graph is acyclic");
-    let near = |v: NodeIndex, way| g.neighbors_directed(v, way).map(NodeIndex::index);
-    for &v in &topo {
-        nodes[v.index()].layer = near(v, Incoming).map(|p| nodes[p].layer + 1).max().unwrap_or(0);
-    }
-    for &v in topo.iter().rev() {
-        if near(v, Incoming).next().is_none() && near(v, Outgoing).next().is_some() {
-            nodes[v.index()].layer = near(v, Outgoing).map(|s| nodes[s].layer).min().unwrap() - 1;
-        }
+        edges.push(Edge { src, dst, label: d.label.clone(), style: d.style, arrow: d.arrow, rev, path });
     }
     (nodes, edges)
 }
@@ -296,7 +302,7 @@ fn layer_graph(graph: &Graph) -> (Vec<Node>, Vec<Edge>) {
 /// edges take an extra layer for the label.
 #[must_use]
 pub fn node_layers(graph: &Graph) -> Vec<usize> {
-    layer_graph(graph).0.iter().take(graph.nodes.len()).map(|n| n.layer).collect()
+    layers(graph, &back_edges(graph))
 }
 
 // Phases of a `Layout`, named for what has been decided so far.
@@ -352,7 +358,7 @@ pub(crate) struct Scene {
 
 /// Lay out and paint `graph`; `None` if it has no nodes.
 pub(crate) fn scene(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Option<Scene> {
-    if graph.nodes.is_empty() {
+    if graph.g.node_count() == 0 {
         return None;
     }
     let td = direction.unwrap_or(graph.direction) == Direction::TD;
@@ -1022,7 +1028,7 @@ mod tests {
 
     /// The index of the node with this id.
     fn id(g: &Graph, name: &str) -> usize {
-        g.nodes.iter().position(|n| n.id == name).unwrap()
+        g.g.node_weights().position(|n| n.id == name).unwrap()
     }
 
     fn node(pos: i64, csize: i64, layer: usize) -> Node {

@@ -4,6 +4,8 @@
 
 use crate::model::{EdgeDef, Graph, Group, Mark, NodeDef, Style};
 use crate::Error;
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};
 
 /// Split `a, b c` / `a,b,c` into ids.
@@ -19,24 +21,24 @@ pub(crate) fn split_ids(text: &str) -> Vec<String> {
 ///
 /// An id that isn't a node, or two consecutive ids with no edge between them.
 pub fn highlight(graph: &mut Graph, path: &[String]) -> Result<(), Error> {
-    let index: HashMap<&str, usize> = graph.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+    let g = &mut graph.g;
+    let index: HashMap<&str, NodeIndex> = g.node_indices().map(|v| (g[v].id.as_str(), v)).collect();
     let mut ids = Vec::new();
     for id in path {
         ids.push(*index.get(id.as_str()).ok_or_else(|| Error::new(format!("highlight: no node {id:?}")))?);
     }
-    for &i in &ids {
-        graph.nodes[i].mark = Mark::Highlight;
+    for &v in &ids {
+        g[v].mark = Mark::Highlight;
     }
     for pair in ids.windows(2) {
         let (a, b) = (pair[0], pair[1]);
-        let mut found = false;
-        for e in graph.edges.iter_mut().filter(|e| (e.src, e.dst) == (a, b) || (e.src, e.dst) == (b, a)) {
-            e.style = Style::Thick;
-            found = true;
-        }
-        if !found {
-            let (a, b) = (&graph.nodes[a].id, &graph.nodes[b].id);
+        let between: Vec<_> = g.edges_connecting(a, b).chain(g.edges_connecting(b, a)).map(|e| e.id()).collect();
+        if between.is_empty() {
+            let (a, b) = (&g[a].id, &g[b].id);
             return Err(Error::new(format!("highlight: no edge between {a:?} and {b:?}")));
+        }
+        for e in between {
+            g[e].style = Style::Thick;
         }
     }
     Ok(())
@@ -67,13 +69,14 @@ fn mark(node: &mut NodeDef, mark: Mark, prefix: &str) {
 type EdgeKey = (String, String, usize);
 
 fn edge_keys(graph: &Graph) -> Vec<EdgeKey> {
-    let mut seen: HashMap<(usize, usize), usize> = HashMap::new();
-    let key = |e: &EdgeDef| {
-        let nth = seen.entry((e.src, e.dst)).or_default();
+    let mut seen: HashMap<(NodeIndex, NodeIndex), usize> = HashMap::new();
+    let ends = graph.g.edge_references().map(|e| (e.source(), e.target()));
+    let key = |(s, t)| {
+        let nth = seen.entry((s, t)).or_default();
         *nth += 1;
-        (graph.nodes[e.src].id.clone(), graph.nodes[e.dst].id.clone(), *nth)
+        (graph.g[s].id.clone(), graph.g[t].id.clone(), *nth)
     };
-    graph.edges.iter().map(key).collect()
+    ends.map(key).collect()
 }
 
 /// The index of the group titled `title` in `graph`, adding it if needed.
@@ -91,27 +94,26 @@ fn group_titled(graph: &mut Graph, title: &str) -> usize {
 #[must_use]
 pub fn diff(before: &Graph, after: &Graph) -> Graph {
     let mut g = after.clone();
-    let old: HashMap<&str, &NodeDef> = before.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    for n in &mut g.nodes {
+    let old: HashMap<&str, &NodeDef> = before.g.node_weights().map(|n| (n.id.as_str(), n)).collect();
+    for n in g.g.node_weights_mut() {
         match old.get(n.id.as_str()) {
             None => mark(n, Mark::Added, "+"),
             Some(o) if o.lines != n.lines || o.shape != n.shape => mark(n, Mark::Changed, "~"),
             Some(_) => {}
         }
     }
-    let mut index: HashMap<String, usize> = g.nodes.iter().enumerate().map(|(i, n)| (n.id.clone(), i)).collect();
-    for n in before.nodes.iter().filter(|n| !after.nodes.iter().any(|a| a.id == n.id)) {
+    let mut index: HashMap<String, NodeIndex> = g.g.node_indices().map(|v| (g.g[v].id.clone(), v)).collect();
+    for n in before.g.node_weights().filter(|n| !after.g.node_weights().any(|a| a.id == n.id)) {
         let mut removed = n.clone();
         mark(&mut removed, Mark::Removed, "-");
         // Keep it inside its frame: group indices differ between versions, titles don't.
         removed.group = n.group.map(|i| group_titled(&mut g, &before.groups[i].title));
-        index.insert(n.id.clone(), g.nodes.len());
-        g.nodes.push(removed);
+        index.insert(n.id.clone(), g.g.add_node(removed));
     }
 
-    let old_edges: HashMap<EdgeKey, &EdgeDef> = edge_keys(before).into_iter().zip(&before.edges).collect();
+    let old_edges: HashMap<EdgeKey, &EdgeDef> = edge_keys(before).into_iter().zip(before.g.edge_weights()).collect();
     let new_keys = edge_keys(after);
-    for (e, key) in g.edges.iter_mut().zip(&new_keys) {
+    for (e, key) in g.g.edge_weights_mut().zip(&new_keys) {
         match old_edges.get(key) {
             None => {
                 e.style = Style::Thick;
@@ -124,11 +126,10 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
         }
     }
     let new_keys: HashSet<EdgeKey> = new_keys.into_iter().collect();
-    for (e, key) in before.edges.iter().zip(edge_keys(before)) {
+    for (e, key) in before.g.edge_weights().zip(edge_keys(before)) {
         if !new_keys.contains(&key) {
-            let (src, dst) = (index[&key.0], index[&key.1]);
             let label = edge_label("-", e.label.as_deref());
-            g.edges.push(EdgeDef { src, dst, label, style: Style::Dotted, arrow: e.arrow });
+            g.g.add_edge(index[&key.0], index[&key.1], EdgeDef { label, style: Style::Dotted, arrow: e.arrow });
         }
     }
     g

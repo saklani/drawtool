@@ -1,4 +1,5 @@
 use drawtool::{parse, render};
+use petgraph::graph::{EdgeIndex, NodeIndex};
 
 #[test]
 fn parse_error_names_the_line() {
@@ -23,7 +24,7 @@ fn wide_characters_keep_boxes_aligned() {
 #[test]
 fn last_explicit_label_wins_as_in_mermaid() {
     let g = parse("a[First] --> b\na[Second] --> c\na --> d").unwrap();
-    assert_eq!(g.nodes[0].lines, vec!["Second"]);
+    assert_eq!(g.g[NodeIndex::new(0)].lines, vec!["Second"]);
 }
 
 /// Some line of `out` contains both `a` and `b`: in LR, consecutive boxes sit
@@ -76,7 +77,7 @@ fn max_width_zero_means_unlimited() {
 #[test]
 fn wrapping_keeps_long_words_whole() {
     let g = drawtool::wrap_labels(&parse("a[supercalifragilistic word]").unwrap(), 8);
-    assert_eq!(g.nodes[0].lines, vec!["supercalifragilistic", "word"]);
+    assert_eq!(g.g[NodeIndex::new(0)].lines, vec!["supercalifragilistic", "word"]);
 }
 
 #[test]
@@ -98,10 +99,10 @@ fn several_crossing_edges_keep_connectors() {
 #[test]
 fn highlight_marks_nodes_and_thickens_edges() {
     let g = parse("flowchart LR\n%% highlight: a, b\na --> b --> c").unwrap();
-    assert_eq!(g.nodes[0].mark, drawtool::Mark::Highlight);
-    assert_eq!(g.nodes[2].mark, drawtool::Mark::None);
-    assert_eq!(g.edges[0].style, drawtool::Style::Thick);
-    assert_eq!(g.edges[1].style, drawtool::Style::Solid);
+    assert_eq!(g.g[NodeIndex::new(0)].mark, drawtool::Mark::Highlight);
+    assert_eq!(g.g[NodeIndex::new(2)].mark, drawtool::Mark::None);
+    assert_eq!(g.g[EdgeIndex::new(0)].style, drawtool::Style::Thick);
+    assert_eq!(g.g[EdgeIndex::new(1)].style, drawtool::Style::Solid);
     let out = render(&g, None, false);
     assert!(out.contains('┏') && out.contains("━►"), "\n{out}");
 }
@@ -119,12 +120,12 @@ fn diff_marks_added_removed_and_changed() {
     let before = parse("a[A] --> b[B] --> c[C]").unwrap();
     let after = parse("a[A] --> b[B two] --> d[D]").unwrap();
     let g = drawtool::diff(&before, &after);
-    let mark = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap().mark;
+    let mark = |id: &str| g.g.node_weights().find(|n| n.id == id).unwrap().mark;
     assert_eq!(mark("a"), drawtool::Mark::None);
     assert_eq!(mark("b"), drawtool::Mark::Changed);
     assert_eq!(mark("d"), drawtool::Mark::Added);
     assert_eq!(mark("c"), drawtool::Mark::Removed);
-    let styles: Vec<_> = g.edges.iter().map(|e| e.style).collect();
+    let styles: Vec<_> = g.g.edge_weights().map(|e| e.style).collect();
     use drawtool::Style::*;
     assert_eq!(styles, vec![Solid, Thick, Dotted]);
     let out = render(&g, None, false);
@@ -135,7 +136,7 @@ fn diff_marks_added_removed_and_changed() {
 fn subgraph_membership_and_errors() {
     let g = parse("subgraph api [API server]\n  a --> b\n  subgraph inner\n    c\n  end\nend\nd --> a").unwrap();
     assert_eq!(g.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["API server", "inner"]);
-    let group = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap().group;
+    let group = |id: &str| g.g.node_weights().find(|n| n.id == id).unwrap().group;
     assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(0), Some(0), Some(1), None));
     assert!(parse("a --> b\nend").unwrap_err().message.contains("without a matching"));
     assert!(parse("subgraph x\na").unwrap_err().message.contains("never closed"));

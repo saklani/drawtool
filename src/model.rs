@@ -1,5 +1,7 @@
 //! The parsed flowchart: what every stage after parsing works on.
 
+use petgraph::graph::DiGraph;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction {
     TD,
@@ -64,10 +66,9 @@ impl NodeDef {
     }
 }
 
+/// An arrow's own data; its ends are the graph's.
 #[derive(Clone, Debug)]
 pub struct EdgeDef {
-    pub src: usize,
-    pub dst: usize,
     pub label: Option<Vec<String>>,
     pub style: Style,
     pub arrow: bool,
@@ -79,10 +80,12 @@ pub struct Group {
     pub title: String,
 }
 
+/// A flowchart: boxes are the nodes of `g` and arrows its edges, each in the
+/// order they were first written. Nothing is ever removed, so indices stay
+/// in that order too.
 #[derive(Clone, Debug)]
 pub struct Graph {
     pub direction: Direction,
-    pub nodes: Vec<NodeDef>,
-    pub edges: Vec<EdgeDef>,
+    pub g: DiGraph<NodeDef, EdgeDef>,
     pub groups: Vec<Group>,
 }

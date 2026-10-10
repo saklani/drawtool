@@ -41,12 +41,15 @@ pub struct NodeDef {
     pub lines: Vec<String>,
     pub shape: Shape,
     pub mark: Mark,
+    /// Index into `Graph::groups` of the innermost `subgraph` the node
+    /// first appeared in.
+    pub group: Option<usize>,
     explicit: bool,
 }
 
 impl NodeDef {
     pub fn new(id: &str, lines: Vec<String>, shape: Shape) -> Self {
-        NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, explicit: true }
+        NodeDef { id: id.to_string(), lines, shape, mark: Mark::None, group: None, explicit: true }
     }
 }
 
@@ -59,11 +62,18 @@ pub struct EdgeDef {
     pub arrow: bool,
 }
 
+/// A `subgraph` block, drawn as a dashed frame around its nodes.
+#[derive(Clone, Debug)]
+pub struct Group {
+    pub title: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Graph {
     pub direction: Direction,
     pub nodes: Vec<NodeDef>,
     pub edges: Vec<EdgeDef>,
+    pub groups: Vec<Group>,
 }
 
 struct Patterns {
@@ -73,6 +83,7 @@ struct Patterns {
     header: Regex,
     bare_header: Regex,
     ignored: Regex,
+    subgraph: Regex,
     br: Regex,
 }
 
@@ -97,7 +108,8 @@ fn patterns() -> &'static Patterns {
             pipe_label: rx(r"^\s*\|([^|]*)\|"),
             header: rx(r"(?i)^(?:(?:flowchart|graph)\s+|direction\s+)?(TD|TB|BT|LR|RL)$"),
             bare_header: rx(r"(?i)^(?:flowchart|graph)$"),
-            ignored: rx(r"^(?:(?:subgraph|classDef|class|style|linkStyle|click)\b|end$)"),
+            ignored: rx(r"^(?:classDef|class|style|linkStyle|click)\b"),
+            subgraph: rx(r#"^subgraph\s+(?:(\w[\w.:$-]*)\s*\[(.*)\]|(.+))$"#),
             br: rx(r"(?i)<br\s*/?>"),
         }
     })
@@ -160,6 +172,8 @@ struct Parser {
     nodes: Vec<NodeDef>,
     index: HashMap<String, usize>,
     edges: Vec<EdgeDef>,
+    /// Open `subgraph` blocks, innermost last.
+    open: Vec<usize>,
 }
 
 impl Parser {
@@ -170,14 +184,21 @@ impl Parser {
             .ok_or_else(|| format!("expected a node id at {}", quote(&s[pos..])))?;
         let id = m.as_str().to_string();
         let pos = pos + m.end();
+        let group = self.open.last().copied();
         let idx = match self.index.get(&id) {
-            Some(&i) => i,
+            Some(&i) => {
+                if self.nodes[i].group.is_none() {
+                    self.nodes[i].group = group;
+                }
+                i
+            }
             None => {
                 self.nodes.push(NodeDef {
                     id: id.clone(),
                     lines: vec![id.clone()],
                     shape: Shape::Box,
                     mark: Mark::None,
+                    group,
                     explicit: false,
                 });
                 self.index.insert(id.clone(), self.nodes.len() - 1);
@@ -250,7 +271,8 @@ impl Parser {
 pub fn parse(text: &str) -> Result<Graph, String> {
     let pats = patterns();
     let mut direction = Direction::LR;
-    let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new() };
+    let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new(), open: Vec::new() };
+    let mut groups: Vec<Group> = Vec::new();
     let mut highlight: Option<(usize, Vec<String>)> = None;
     for (lineno, raw) in text.lines().enumerate() {
         let line = raw.trim().trim_end_matches(';').trim();
@@ -261,7 +283,22 @@ pub fn parse(text: &str) -> Result<Graph, String> {
         if line.is_empty() || line.starts_with("%%") || line.starts_with('#') {
             continue;
         }
+        if let Some(c) = pats.subgraph.captures(line) {
+            let title = c.get(2).or_else(|| c.get(1)).or_else(|| c.get(3)).map_or("", |m| m.as_str());
+            groups.push(Group { title: clean_label(title).join(" ") });
+            p.open.push(groups.len() - 1);
+            continue;
+        }
+        if line == "end" {
+            if p.open.pop().is_none() {
+                return Err(format!("line {}: `end` without a matching `subgraph`", lineno + 1));
+            }
+            continue;
+        }
         if let Some(c) = pats.header.captures(line) {
+            if !p.open.is_empty() {
+                continue; // a subgraph's own direction isn't supported
+            }
             let d = c[1].to_uppercase();
             direction = if d == "LR" || d == "RL" { Direction::LR } else { Direction::TD };
             continue;
@@ -271,7 +308,10 @@ pub fn parse(text: &str) -> Result<Graph, String> {
         }
         p.statement(line).map_err(|e| format!("line {}: {}", lineno + 1, e))?;
     }
-    let mut graph = Graph { direction, nodes: p.nodes, edges: p.edges };
+    if !p.open.is_empty() {
+        return Err(format!("`subgraph {}` is never closed with `end`", groups[p.open[0]].title));
+    }
+    let mut graph = Graph { direction, nodes: p.nodes, edges: p.edges, groups };
     if let Some((lineno, ids)) = highlight {
         crate::marks::highlight(&mut graph, &ids).map_err(|e| format!("line {lineno}: {e}"))?;
     }

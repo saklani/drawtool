@@ -124,3 +124,33 @@ fn diff_marks_added_removed_and_changed() {
     let out = render(&g, None, false);
     assert!(out.contains("+ D") && out.contains("- C") && out.contains("~ B two"), "\n{out}");
 }
+
+#[test]
+fn subgraph_membership_and_errors() {
+    let g = parse("subgraph api [API server]\n  a --> b\n  subgraph inner\n    c\n  end\nend\nd --> a").unwrap();
+    assert_eq!(g.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["API server", "inner"]);
+    let group = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap().group;
+    assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(0), Some(0), Some(1), None));
+    assert!(parse("a --> b\nend").unwrap_err().contains("without a matching"));
+    assert!(parse("subgraph x\na").unwrap_err().contains("never closed"));
+}
+
+#[test]
+fn group_frame_holds_members_and_excludes_others() {
+    for dir in ["LR", "TD"] {
+        let src = format!("flowchart {dir}\nsubgraph g [Grp]\n  a --> b\nend\nc --> a\nb --> d");
+        let out = render(&parse(&src).unwrap(), None, false);
+        let rows: Vec<Vec<char>> = out.lines().map(|l| l.chars().collect()).collect();
+        let find = |s: &str| {
+            rows.iter().enumerate().find_map(|(y, r)| {
+                r.iter().collect::<String>().find(s).map(|i| (r.iter().collect::<String>()[..i].chars().count(), y))
+            })
+        };
+        let (fx, fy) = find("┌ Grp").expect("frame title");
+        let fx1 = rows[fy].iter().rposition(|&c| c == '┐').unwrap();
+        let fy1 = (fy..rows.len()).find(|&y| rows[y].get(fx) == Some(&'└')).unwrap();
+        let inside = |(x, y): (usize, usize)| x > fx && x < fx1 && y > fy && y < fy1;
+        assert!(inside(find("│ a ").unwrap()) && inside(find("│ b ").unwrap()), "{dir}:\n{out}");
+        assert!(!inside(find("│ c ").unwrap()) && !inside(find("│ d ").unwrap()), "{dir}:\n{out}");
+    }
+}

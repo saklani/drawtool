@@ -1,0 +1,16 @@
+flowchart LR
+subgraph api [API server]
+  mw(middleware) --> route{route}
+end
+subgraph vendors [Vendors]
+  stripe(Stripe)
+  bridge(Bridge)
+end
+subgraph data [Storage]
+  pg[(Postgres)]
+  redis[(Redis)]
+end
+client[client] --> mw
+mw -.->|rate limit| redis
+route --> stripe & bridge
+stripe & bridge -->|webhook| pg

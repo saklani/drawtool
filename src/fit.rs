@@ -163,7 +163,7 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
             _ => {}
         }
     }
-    Graph { direction: Direction::LR, nodes, edges }
+    Graph { direction: Direction::LR, nodes, edges, groups: graph.groups.clone() }
 }
 
 /// Greedily pack consecutive layers into LR bands that each fit, without

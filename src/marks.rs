@@ -69,6 +69,7 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
         if !index.contains_key(&n.id) {
             let mut removed = n.clone();
             removed.mark = Mark::Removed;
+            removed.group = None;
             removed.lines = prefixed("-", &n.lines);
             index.insert(n.id.clone(), g.nodes.len());
             g.nodes.push(removed);

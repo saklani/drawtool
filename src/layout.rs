@@ -386,6 +386,40 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         layers[layer[v] as usize].push(v);
     }
 
+    // Lanes: every subgraph is a strip across the flow that only its members
+    // (and the dummies/labels of edges leaving them) occupy, so its frame can
+    // never enclose a stranger. Lane 0 is "no group"; lanes are stacked in
+    // order of first appearance.
+    let mut lane = vec![0usize; ln.len()];
+    for (i, n) in graph.nodes.iter().enumerate() {
+        lane[i] = n.group.map_or(0, |g| g + 1);
+    }
+    for e in &edges {
+        for &v in &e.path {
+            if ln[v].kind != Kind::Real {
+                lane[v] = lane[e.src];
+            }
+        }
+    }
+    // Each lane's layer span (real members only). Lanes whose spans don't
+    // overlap never share a layer, so they may share cross-axis space.
+    let mut lane_span: HashMap<usize, (i64, i64)> = HashMap::new();
+    let mut lane_order: Vec<usize> = Vec::new();
+    for v in 0..graph.nodes.len() {
+        let e = lane_span.entry(lane[v]).or_insert((i64::MAX, i64::MIN));
+        *e = (e.0.min(layer[v]), e.1.max(layer[v]));
+        if !lane_order.contains(&lane[v]) {
+            lane_order.push(lane[v]);
+        }
+    }
+    lane_order.sort_by_key(|l| lane_span[l].0);
+    let overlaps = |a: usize, b: usize| lane_span[&a].0 <= lane_span[&b].1 && lane_span[&b].0 <= lane_span[&a].1;
+    let lane_rank: Vec<usize> = lane.iter().map(|l| lane_order.iter().position(|x| x == l).unwrap_or(0)).collect();
+    let framed = |l: usize| l > 0;
+    for lay in layers.iter_mut() {
+        lay.sort_by_key(|&v| lane_rank[v]);
+    }
+
     // Crossing reduction (barycenter sweeps, keep the best ordering).
     let mut best = layers.clone();
     let mut best_c = crossings(&layers, &down);
@@ -412,7 +446,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
                 }
             };
             let mut keyed: Vec<(f64, usize)> = layers[k].iter().map(|&v| (key(v), v)).collect();
-            keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            keyed.sort_by(|a, b| lane_rank[a.1].cmp(&lane_rank[b.1]).then(a.0.partial_cmp(&b.0).unwrap()));
             layers[k] = keyed.into_iter().map(|(_, v)| v).collect();
         }
         let c = crossings(&layers, &down);
@@ -529,7 +563,44 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
     for k in 1..nl {
         place(&mut ln, &layers[k], &up);
     }
-    let shift = ln.iter().map(|n| n.pos).min().unwrap();
+    // Push each lane clear of the one before it, leaving room for frames.
+    const FRAME: i64 = 2; // gap + dashed line between a member and its frame
+    let mut extent: Vec<(i64, i64)> = vec![(i64::MAX, i64::MIN); lane_order.len()];
+    for (v, nd) in ln.iter().enumerate() {
+        let e = &mut extent[lane_rank[v]];
+        *e = (e.0.min(nd.pos), e.1.max(nd.pos + nd.csize - 1));
+    }
+    let margin = |l: usize| if framed(l) { FRAME } else { 0 };
+    for r in 1..lane_order.len() {
+        let (lr, mr) = (lane_order[r], margin(lane_order[r]));
+        let need = (0..r)
+            .filter(|&q| overlaps(lane_order[q], lr))
+            .map(|q| extent[q].1 + 1 + gap + margin(lane_order[q]) + mr)
+            .max()
+            .unwrap_or(i64::MIN);
+        let push = (need - extent[r].0).max(0);
+        for (v, nd) in ln.iter_mut().enumerate() {
+            if lane_rank[v] == r {
+                nd.pos += push;
+            }
+        }
+        extent[r] = (extent[r].0 + push, extent[r].1 + push);
+    }
+    // Pushing a lane can run it into another lane's dummies in a shared layer.
+    for lay in &layers {
+        for w in 1..lay.len() {
+            let floor = ln[lay[w - 1]].pos + ln[lay[w - 1]].csize + gap;
+            if ln[lay[w]].pos < floor {
+                ln[lay[w]].pos = floor;
+            }
+        }
+    }
+    let shift = ln
+        .iter()
+        .enumerate()
+        .map(|(v, n)| n.pos - if framed(lane[v]) { FRAME } else { 0 })
+        .min()
+        .unwrap();
     for nd in ln.iter_mut() {
         nd.pos -= shift;
     }
@@ -666,9 +737,19 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         }
     }
 
-    // Layer-axis coordinates.
+    // Layer span of each framed lane (from its real members only).
+    let mut spans: Vec<(usize, i64, i64)> = Vec::new(); // (lane, first layer, last layer)
+    for &l in lane_order.iter().filter(|&&l| framed(l)) {
+        let ls = (0..graph.nodes.len()).filter(|&v| lane[v] == l).map(|v| layer[v]);
+        let (lo, hi) = ls.fold((i64::MAX, i64::MIN), |(a, b), x| (a.min(x), b.max(x)));
+        spans.push((l, lo, hi));
+    }
+    let ends_at = |k: usize| spans.iter().any(|s| s.2 == k as i64);
+    let starts_at = |k: usize| spans.iter().any(|s| s.1 == k as i64);
+
+    // Layer-axis coordinates. Channels next to a frame get FRAME extra cells.
     let (mut bstart, mut cstart, mut lead) = (vec![0i64; nl], vec![0i64; nl], vec![0i64; nl]);
-    let mut cur = 0i64;
+    let mut cur = if starts_at(0) { FRAME } else { 0 };
     for k in 0..nl {
         bstart[k] = cur;
         cur += layers[k].iter().map(|&v| ln[v].lsize).max().unwrap_or(0);
@@ -676,10 +757,15 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
             let ss = &chan[k];
             let ntracks = ss.iter().filter(|&&i| segs[i].cs != segs[i].ct).map(|&i| segs[i].track + 1).max().unwrap_or(0);
             lead[k] = if !td { 1 } else if ss.iter().any(|&i| segs[i].arrow_start) { 1 } else { 0 };
+            if ends_at(k) {
+                lead[k] += FRAME;
+            }
+            let before_tail = if starts_at(k + 1) { FRAME } else { 0 };
             cstart[k] = cur;
-            cur += lead[k] + ntracks + 1;
+            cur += lead[k] + ntracks + before_tail + 1;
         }
     }
+    let band_end = |k: usize| bstart[k] + layers[k].iter().map(|&v| ln[v].lsize).max().unwrap_or(0) - 1;
     let phys = |l: i64, c: i64| if td { (c, l) } else { (l, c) };
     let in_l = |n: usize| bstart[layer[n] as usize];
     let out_l = |n: usize| bstart[layer[n] as usize] + ln[n].lsize - 1;
@@ -827,6 +913,47 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         let o = phys(outside, c);
         if mask.contains_key(&o) && !arrows.contains(&o) {
             out.insert(phys(border, c), tee);
+        }
+    }
+
+    // Group frames: dashed, drawn only into empty cells so edges pass through.
+    for &(l, lo, hi) in &spans {
+        let members = (0..ln.len()).filter(|&v| lane[v] == l && ln[v].kind == Kind::Real);
+        let (c0, c1) = members.fold((i64::MAX, i64::MIN), |(a, b), v| (a.min(ln[v].pos), b.max(ln[v].pos + ln[v].csize - 1)));
+        let (l0, l1) = (bstart[lo as usize] - FRAME, band_end(hi as usize) + FRAME);
+        let (x0, y0) = phys(l0, c0 - FRAME);
+        let (x1, y1) = phys(l1, c1 + FRAME);
+        let (x0, x1, y0, y1) = (x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1));
+        let [tl, tr, bl, br, hz, vt] = if ascii { ['+', '+', '+', '+', '.', ':'] } else { ['┌', '┐', '└', '┘', '┄', '┆'] };
+        let mut put = |cell: (i64, i64), ch: char| {
+            out.entry(cell).or_insert(ch);
+        };
+        for x in x0 + 1..x1 {
+            put((x, y0), hz);
+            put((x, y1), hz);
+        }
+        for y in y0 + 1..y1 {
+            put((x0, y), vt);
+            put((x1, y), vt);
+        }
+        for (cell, ch) in [((x0, y0), tl), ((x1, y0), tr), ((x0, y1), bl), ((x1, y1), br)] {
+            put(cell, ch);
+        }
+        // Title on the top border, slid right past any edge crossing it.
+        let title: Vec<char> = format!(" {} ", graph.groups[l - 1].title).chars().collect();
+        let tw: i64 = title.iter().map(|&c| char_width(c)).sum();
+        let free = |x: i64| (x..x + tw).all(|x| out.get(&(x, y0)) == Some(&hz));
+        // If no gap is wide enough, the title wins over the lines it covers.
+        let start = (x0 + 1..x1 - tw).find(|&x| free(x)).or((x1 - x0 > tw).then_some(x0 + 1));
+        if let Some(start) = start {
+            let mut x = start;
+            for &ch in &title {
+                out.insert((x, y0), ch);
+                if char_width(ch) == 2 {
+                    out.insert((x + 1, y0), WIDE_TAIL);
+                }
+                x += char_width(ch);
+            }
         }
     }
 

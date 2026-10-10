@@ -213,7 +213,11 @@ impl Painter {
         } else {
             None
         };
-        let row = if round && all(Light) {
+        let h = left.or(right);
+        let corner_mix = i < 4 && h == Some(Double) && up.or(down) == Some(Light);
+        let row = if corner_mix {
+            "╒╕╘╛"
+        } else if round && all(Light) {
             "╭╮╰╯"
         } else if all(Heavy) {
             "┏┓┗┛"

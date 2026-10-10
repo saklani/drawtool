@@ -11,7 +11,7 @@
 //! Each element draws itself at a position and width and returns its height;
 //! `card`, `row` and `col` place their children.
 
-use crate::paint::{char_width, width, wrap, Painter, Weight};
+use crate::paint::{char_width, width, wrap, Fit, Painter, Weight};
 use crate::parse::Style;
 use crate::Error;
 
@@ -76,12 +76,6 @@ pub struct Screen {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Wireframe {
     pub screens: Vec<Screen>,
-}
-
-pub struct WireFitted {
-    pub text: String,
-    pub width: usize,
-    pub fits: bool,
 }
 
 /// True if the first meaningful line starts a wireframe.
@@ -445,7 +439,7 @@ pub fn render_wireframe(wf: &Wireframe, ascii: bool) -> String {
 /// Render screens side by side, wrapping to a new row of screens when the
 /// next one would pass `max_width` (0 = unlimited). A screen wider than the
 /// budget is narrowed, down to `MIN_WIDTH`.
-pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> WireFitted {
+pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> Fit {
     let mut p = Painter::new(ascii);
     let (mut x, mut y, mut row_h) = (0i64, 0i64, 0i64);
     for s in &wf.screens {
@@ -458,5 +452,5 @@ pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> Wi
     }
     let text = p.finish();
     let width = text.lines().map(width).max().unwrap_or(0) as usize;
-    WireFitted { text, width, fits: max_width == 0 || width <= max_width }
+    Fit { text, width, fits: max_width == 0 || width <= max_width }
 }

@@ -14,6 +14,8 @@ pub enum Direction {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
     Box,
+    /// `[(name)]`: drawn with double caps, `╒═╕`.
+    Database,
     Round,
     Decision,
 }
@@ -119,7 +121,7 @@ fn patterns() -> &'static Patterns {
 
 const SHAPES: &[(&str, &str, Shape)] = &[
     ("([", "])", Shape::Round),
-    ("[(", ")]", Shape::Round),
+    ("[(", ")]", Shape::Database),
     ("((", "))", Shape::Round),
     ("[[", "]]", Shape::Box),
     ("{{", "}}", Shape::Decision),

@@ -10,9 +10,9 @@ so a diagram reads like a sentence and fits on screen without scrolling.
 │ GET /users/:id ├─►║ token ok? ╟─┤
 └────────────────┘  ╚═══════════╝ └─yes─┐ ╔═════════╗ ┌─yes─────────────────────────────────────┐ ┌────────┐
                                         └►║ cached? ╟─┤                                         ├►│ 200 OK │
-                                          ╚═════════╝ └─no──┐ ╭──────────╮       ╭────────────╮ │ └────────┘
+                                          ╚═════════╝ └─no──┐ ╒══════════╕       ╭────────────╮ │ └────────┘
                                                             └►│ postgres ├──row─►│ fill cache ├─┘
-                                                              ╰──────────╯       ╰────────────╯
+                                                              ╘══════════╛       ╰────────────╯
 ```
 
 ```
@@ -153,23 +153,23 @@ groups that are different stages of the flow sit side by side.
             ┌ API server ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐ ┌──►│ Stripe ├────webhook─┐
             ┆                             ┆ │ ┆ ╰────────╯ ┆          │
             ┆                  ╔═══════╗  ┆ │ ┆            ┆          │
-            ┆                ┌►║ route ╟────┤ ┆ ╭────────╮ ┆          │
-┌────────┐  ┆ ╭────────────╮ │ ╚═══════╝  ┆ └──►│ Bridge ├────webhook─┤
-│ client ├───►│ middleware ├─┤            ┆   ┆ ╰────────╯ ┆          │
-└────────┘  ┆ ╰────────────╯ └┄rate limit┄┄┄┐ ┆            ┆          │
-            ┆                             ┆ ┆ └┄┄┄┄┄┄┄┄┄┄┄┄┘          │
-            └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘ ┆                         │
-                                            ┆ ┌ Storage ┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+            ┆ ╭────────────╮ ┌►║ route ╟────┤ ┆ ╭────────╮ ┆          │
+┌────────┐  ┆ │            ├─┘ ╚═══════╝  ┆ └──►│ Bridge ├────webhook─┤
+│ client ├───►│ middleware ├┄┐            ┆   ┆ ╰────────╯ ┆          │
+└────────┘  ┆ │            │ └┄rate limit┄┄┄┐ ┆            ┆          │
+            ┆ ╰────────────╯              ┆ ┆ └┄┄┄┄┄┄┄┄┄┄┄┄┘          │
+            ┆                             ┆ ┆                         │
+            └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘ ┆ ┌ Storage ┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
                                             ┆ ┆                       │              ┆
-                                            ┆ ┆                       │ ╭──────────╮ ┆
+                                            ┆ ┆                       │ ╒══════════╕ ┆
                                             ┆ ┆                       └►│ Postgres │ ┆
-                                            ┆ ┆                         ╰──────────╯ ┆
+                                            ┆ ┆                         ╘══════════╛ ┆
                                             ┆ ┆                                      ┆
                                             ┆ ┆                                      ┆
                                             ┆ ┆                                      ┆
-                                            ┆ ┆ ╭───────╮                            ┆
+                                            ┆ ┆ ╒═══════╕                            ┆
                                             └┄┄►│ Redis │                            ┆
-                                              ┆ ╰───────╯                            ┆
+                                              ┆ ╘═══════╛                            ┆
                                               ┆                                      ┆
                                               └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
@@ -200,13 +200,14 @@ draws those nodes with heavy borders and the edges between them thick, e.g. to s
 branch a request takes:
 
 ```
-                                                                ╭──────────╮
-                                                              ┌►│ postgres ├─┐
-                                   ┏━━━━━━━━━┓          ┌─no──┘ ╰──────────╯ │ ┏━━━━━━━━┓
-                                 ┌►┃ cached? ┠──────────┤                    ├►┃ 200 OK ┃
-┏━━━━━━━━━┓  ┏━━━━━━━━━━━┓ ┌━yes━┘ ┗━━━━━━━━━┛          └━yes━━━━━━━━━━━━━━━━┘ ┗━━━━━━━━┛
-┃ request ┠━►┃ token ok? ┠─┤
-┗━━━━━━━━━┛  ┗━━━━━━━━━━━┛ └─no──┐ ┌──────────────────┐
+                                                                ╒══════════╕
+                                   ┏━━━━━━━━━┓                ┌►│ postgres ├─┐ ┏━━━━━━━━┓
+                                   ┃         ┃          ┌─no──┘ ╘══════════╛ └►┃        ┃
+             ┏━━━━━━━━━━━┓       ┌►┃ cached? ┠──────────┘                    ┌►┃ 200 OK ┃
+┏━━━━━━━━━┓  ┃           ┃ ┌━yes━┘ ┃         ┠━━━━━━━━━━━━yes━━━━━━━━━━━━━━━━┘ ┃        ┃
+┃ request ┠━►┃ token ok? ┠━┘       ┗━━━━━━━━━┛                                 ┗━━━━━━━━┛
+┗━━━━━━━━━┛  ┃           ┠───no──┐
+             ┗━━━━━━━━━━━┛       │ ┌──────────────────┐
                                  └►│ 401 Unauthorized │
                                    └──────────────────┘
 ```
@@ -217,16 +218,18 @@ branch a request takes:
 matching nodes by id: `+` added (heavy), `-` removed (dashed/dotted), `~` relabelled.
 
 ```
-                                                                       ╭──────────╮
-                                     ┏━━━━━━━━━━━┓          ┌━+ no━━┬─►│ postgres ├─┐ ┌────────┐
-                                   ┌►┃ + cached? ┠━━━━━━━━━━┤       ┆  ╰──────────╯ ├►│ 200 OK │
-                                   ┃ ┗━━━━━━━━━━━┛          └━+ yes━┆┐              ┃ └────────┘
-                           ┌━+ yes━┘                                ┆└━━━━━━━━━━━━━━┘
-┌─────────┐  ╔═══════════╗ ┃         ┌────────────────────┐         ┆
-│ request ├─►║ token ok? ╟─┼─no─────►│ ~ 401 Unauthorized │         ┆
-└─────────┘  ╚═══════════╝ ┆         └────────────────────┘         ┆
-                           └┄- yes┄┐                                ┆
-                                   └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+                                                                      ╒══════════╕
+                                                                      │          │
+                                                                   ┌━►│ postgres ├─┐ ┌────────┐
+                                    ┏━━━━━━━━━━━┓          ┌━+ no━━┘┌►│          │ │ │        │
+                                  ┌►┃ + cached? ┠━━━━━━━━━━┤        ┆ ╘══════════╛ └►│ 200 OK │
+             ╔═══════════╗        ┃ ┗━━━━━━━━━━━┛          └━+ yes━┐┆              ┌►│        │
+             ║           ╟━━+ yes━┘                                └╂━━━━━━━━━━━━━━┘ └────────┘
+┌─────────┐  ║           ║          ┌────────────────────┐          ┆
+│ request ├─►║ token ok? ╟──no─────►│ ~ 401 Unauthorized │          ┆
+└─────────┘  ║           ║          └────────────────────┘          ┆
+             ║           ╟┄┄- yes┄┐                                 ┆
+             ╚═══════════╝        └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ## Wireframes
@@ -319,7 +322,8 @@ end
 ```
 
 Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`.
-Cycles, self-loops and `subgraph ... end` groups (nested ones are flattened) are supported.
+Cycles (back edges are routed around the outside), self-loops and `subgraph ... end` groups
+(nested ones are flattened) are supported.
 In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).
 Unlike Mermaid, a diagram without a `flowchart` line is drawn left-to-right.
 

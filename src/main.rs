@@ -1,6 +1,6 @@
 use clap::Parser;
 use drawtool::{diff, highlight, is_sequence, is_wireframe, marks::split_ids, parse, parse_sequence, parse_wireframe};
-use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit, Direction};
+use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit, Direction, Fit};
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -95,20 +95,18 @@ fn read_source(path: Option<&str>) -> Result<String, String> {
     }
 }
 
-fn run(args: &Args) -> Result<(String, usize, bool, usize), Box<dyn std::error::Error>> {
-    let width = args.max_width.unwrap_or_else(default_width);
+/// Render the input at `width` columns.
+fn run(args: &Args, width: usize) -> Result<Fit, Box<dyn std::error::Error>> {
     let text = read_source(args.file.as_deref())?;
     let marks = args.diff.is_some() || args.highlight.is_some();
     if (is_wireframe(&text) || is_sequence(&text)) && marks {
         return Err("--diff and --highlight only work on flowcharts".into());
     }
     if is_wireframe(&text) {
-        let f = render_wireframe_fit(&parse_wireframe(&text)?, args.ascii, width);
-        return Ok((f.text, f.width, f.fits, width));
+        return Ok(render_wireframe_fit(&parse_wireframe(&text)?, args.ascii, width));
     }
     if is_sequence(&text) {
-        let f = render_sequence_fit(&parse_sequence(&text)?, args.ascii, width);
-        return Ok((f.text, f.width, f.fits, width));
+        return Ok(render_sequence_fit(&parse_sequence(&text)?, args.ascii, width));
     }
     let mut graph = parse(&text)?;
     if let Some(before) = &args.diff {
@@ -117,17 +115,18 @@ fn run(args: &Args) -> Result<(String, usize, bool, usize), Box<dyn std::error::
     if let Some(ids) = &args.highlight {
         highlight(&mut graph, &split_ids(ids))?;
     }
-    let f = render_fit(&graph, args.direction.unwrap_or(graph.direction), args.ascii, width);
-    Ok((f.text, f.width, f.fits, width))
+    Ok(render_fit(&graph, args.direction.unwrap_or(graph.direction), args.ascii, width))
 }
 
 fn main() -> ExitCode {
-    match run(&Args::parse()) {
-        Ok((text, width, fits, budget)) => {
-            if !fits {
-                eprintln!("drawtool: note: {width} columns wide, over the {budget}-column budget");
+    let args = Args::parse();
+    let budget = args.max_width.unwrap_or_else(default_width);
+    match run(&args, budget) {
+        Ok(fit) => {
+            if !fit.fits {
+                eprintln!("drawtool: note: {} columns wide, over the {budget}-column budget", fit.width);
             }
-            println!("{text}");
+            println!("{}", fit.text);
             ExitCode::SUCCESS
         }
         Err(e) => {

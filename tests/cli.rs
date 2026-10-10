@@ -26,13 +26,19 @@ fn first_explicit_label_wins() {
     assert_eq!(g.nodes[0].lines, vec!["First"]);
 }
 
+/// Some line of `out` contains both `a` and `b`: in LR, consecutive boxes sit
+/// side by side; in TD they stack.
+fn same_row(out: &str, a: &str, b: &str) -> bool {
+    out.lines().any(|l| l.contains(a) && l.contains(b))
+}
+
 #[test]
 fn wide_lr_wraps_labels_before_giving_up_on_lr() {
     let src = "flowchart LR\na[a fairly long label here] --> b[another quite long label] --> c[and a third long one]";
     let g = parse(src).unwrap();
     let unwrapped = drawtool::fit::text_width(&render(&g, None, false));
     let fitted = drawtool::render_fit(&g, drawtool::Direction::LR, false, unwrapped - 10);
-    assert_eq!(fitted.direction, drawtool::Direction::LR);
+    assert!(same_row(&fitted.text, "a fairly", "another"), "still LR:\n{}", fitted.text);
     assert!(fitted.fits && fitted.width < unwrapped, "\n{}", fitted.text);
 }
 
@@ -40,8 +46,8 @@ fn wide_lr_wraps_labels_before_giving_up_on_lr() {
 fn long_lr_chain_breaks_into_rows_and_stays_lr() {
     let src = "flowchart LR\na --> b --> c --> d --> e --> f --> g --> h";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 30);
-    assert_eq!(fitted.direction, drawtool::Direction::LR);
-    assert!(fitted.bands > 1 && fitted.width <= 30, "\n{}", fitted.text);
+    assert!(same_row(&fitted.text, "│ a ", "│ b "), "still LR:\n{}", fitted.text);
+    assert!(fitted.text.contains("└─►") && fitted.width <= 30, "wrapped onto a new row:\n{}", fitted.text);
 }
 
 #[test]
@@ -49,7 +55,7 @@ fn lr_never_switches_to_td_on_its_own() {
     // Each box is 12 wide: no LR layout fits in 12 columns, but TD would.
     let src = "flowchart LR\na[abcdefgh] --> b[ijklmnop] --> c[qrstuvwx]";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 12);
-    assert_eq!(fitted.direction, drawtool::Direction::LR, "\n{}", fitted.text);
+    assert!(same_row(&fitted.text, "abcdefgh", "ijklmnop"), "still LR:\n{}", fitted.text);
     assert!(!fitted.fits);
 }
 
@@ -57,7 +63,7 @@ fn lr_never_switches_to_td_on_its_own() {
 fn td_is_kept_when_asked_for() {
     let src = "flowchart TD\na --> b --> c";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::TD, false, 120);
-    assert_eq!(fitted.direction, drawtool::Direction::TD);
+    assert!(!same_row(&fitted.text, "│ a ", "│ b "), "stacked, not side by side:\n{}", fitted.text);
 }
 
 #[test]
@@ -77,7 +83,7 @@ fn wrapping_keeps_long_words_whole() {
 fn single_crossing_edge_wraps_around_like_text() {
     let src = "flowchart LR\na[first step] --> b[second step] --> c[third step] --> d[fourth step]";
     let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, false, 50);
-    assert!(fitted.bands > 1 && fitted.width <= 50, "\n{}", fitted.text);
+    assert!(fitted.width <= 50, "\n{}", fitted.text);
     assert!(!fitted.text.contains('①'), "a lone crossing edge is drawn, not numbered:\n{}", fitted.text);
     assert!(fitted.text.contains("└─►"), "\n{}", fitted.text);
 }

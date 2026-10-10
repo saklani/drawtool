@@ -4,22 +4,13 @@
 //! connectors (①). TD only ever wraps labels.
 
 use crate::layout::{node_layers, render};
-use crate::paint::{first_fit, wrap};
+use crate::paint::{first_fit, wrap, Fit};
 use crate::parse::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use std::collections::{HashMap, HashSet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Label wrap widths tried in order; `None` leaves labels as written.
 const WRAPS: [Option<usize>; 4] = [None, Some(24), Some(16), Some(12)];
-
-pub struct Fitted {
-    pub text: String,
-    pub direction: Direction,
-    pub width: usize,
-    pub fits: bool,
-    /// Number of stacked LR bands (1 = not broken up).
-    pub bands: usize,
-}
 
 pub fn text_width(text: &str) -> usize {
     text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0)
@@ -42,9 +33,8 @@ fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
 /// Render within `max_width` columns (0 = unlimited), keeping `direction`.
 /// If nothing fits, returns the narrowest single-band attempt.
 #[must_use]
-pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fitted {
-    let f = first_fit(max_width, WRAPS.iter().map(|&w| render(&wrapped(graph, w), Some(direction), ascii)));
-    let first = Fitted { text: f.text, direction, width: f.width, fits: f.fits, bands: 1 };
+pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fit {
+    let first = first_fit(max_width, WRAPS.iter().map(|&w| render(&wrapped(graph, w), Some(direction), ascii)));
     if first.fits || direction == Direction::TD {
         return first;
     }
@@ -101,9 +91,9 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
     Graph { direction: Direction::LR, nodes, edges, groups: graph.groups.clone() }
 }
 
-/// Greedily pack consecutive layers into LR bands that each fit. `None` if a
-/// single layer is too wide on its own.
-fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
+/// Split the layers into consecutive LR bands that each fit, choosing the
+/// cuts by dynamic programming. `None` if a single layer is too wide on its own.
+fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     let layers = node_layers(graph);
     let mut distinct = layers.clone();
     distinct.sort_unstable();
@@ -162,14 +152,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
     }
     let parts = (0..cuts.len()).map(|b| fits(&cuts, b)).collect::<Option<Vec<_>>>()?;
     let width = parts.iter().map(|p| text_width(p)).max().unwrap_or(0);
-    let bands = parts.len();
-    Some(Fitted {
-        text: join_bands(graph, &band_of(&cuts), &parts, ascii),
-        direction: Direction::LR,
-        width,
-        fits: true,
-        bands,
-    })
+    Some(Fit { text: join_bands(graph, &band_of(&cuts), &parts, ascii), width, fits: true })
 }
 
 /// Stack rendered bands, joining each break by a wrap-around line when

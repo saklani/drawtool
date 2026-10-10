@@ -12,8 +12,8 @@
 //! `card`, `row` and `col` place their children.
 
 use crate::paint::{Corners, Layer, Painter, Stroke};
-use crate::parse::strip_comment;
-use crate::text::{char_width, width, wrap, Fit};
+use crate::parse::{strip_comment, unquote};
+use crate::text::{truncate, width, wrap, Fit};
 use crate::Error;
 
 /// Screen width when the header doesn't give one (`width=N`).
@@ -180,12 +180,6 @@ fn parse_block(lines: &[Line], i: &mut usize, indent: usize) -> Result<Vec<El>, 
     Ok(out)
 }
 
-fn unquote(s: &str) -> String {
-    let s = s.trim();
-    let quoted = s.len() >= 2 && (s.starts_with('"') && s.ends_with('"') || s.starts_with('\'') && s.ends_with('\''));
-    if quoted { &s[1..s.len() - 1] } else { s }.to_string()
-}
-
 /// `a | *b | c` → (["a", "b", "c"], Some(1)).
 fn items(rest: &str) -> (Vec<String>, Option<usize>) {
     let parts: Vec<&str> = rest.split('|').map(str::trim).collect();
@@ -210,10 +204,8 @@ fn leaf(text: &str) -> El {
         _ => {}
     }
     if let Some(item) = text.strip_prefix("- ") {
-        return match item.split_once('|') {
-            Some((l, r)) => El::Bullet(unquote(l), Some(unquote(r))),
-            None => El::Bullet(unquote(item), None),
-        };
+        let (item, right) = item.split_once('|').map_or((item, None), |(l, r)| (l, Some(r)));
+        return El::Bullet(unquote(item), right.map(unquote));
     }
     let Some((kw, rest)) = text.split_once(':') else { return El::Text(unquote(text), Align::Auto) };
     let (kw, rest) = (kw.trim().to_ascii_lowercase(), rest.trim());
@@ -256,26 +248,8 @@ fn leaf(text: &str) -> El {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Cut to at most `w` columns, ending in `…` if anything was dropped.
-fn truncate(s: &str, w: i64) -> String {
-    if width(s) <= w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        if width(&out) + char_width(ch) > w - 1 {
-            break;
-        }
-        out.push(ch);
-    }
-    if w > 0 {
-        out.push('…');
-    }
-    out
-}
-
-/// Draw `s` (cut to `w`) aligned within `x..x+w`.
-fn put(p: &mut Painter, x: i64, y: i64, w: i64, s: &str, align: Align) {
+/// Draw `s` (cut to `w`) aligned within `x..x+w`; returns the width drawn.
+fn put(p: &mut Painter, x: i64, y: i64, w: i64, s: &str, align: Align) -> i64 {
     let s = truncate(s, w);
     let room = w - width(&s);
     let dx = match align {
@@ -284,6 +258,7 @@ fn put(p: &mut Painter, x: i64, y: i64, w: i64, s: &str, align: Align) {
         Align::Right => room,
     };
     p.text(x + dx, y, &s);
+    width(&s)
 }
 
 /// Wrapped text; returns its height. With no room at all it takes one
@@ -409,16 +384,12 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
         El::Tabs { items, active, nav } => {
             let n = items.len().max(1) as i64;
             let y = y + i64::from(*nav);
-            if *nav {
-                rule(p, x, y - 1, w, edge);
-            } else {
-                rule(p, x, y + 1, w, 0);
-            }
+            let (rule_y, rule_edge) = if *nav { (y - 1, edge) } else { (y + 1, 0) };
+            rule(p, x, rule_y, w, rule_edge);
             let mut cx = x;
             for (i, item) in items.iter().enumerate() {
                 let cw = if i as i64 == n - 1 { x + w - cx } else { w / n };
-                put(p, cx, y, cw, item, Align::Center);
-                let tw = width(&truncate(item, cw));
+                let tw = put(p, cx, y, cw, item, Align::Center);
                 if Some(i) == *active && tw > 0 {
                     let net = p.net();
                     let start = cx + (cw - tw) / 2;

@@ -52,6 +52,11 @@ fn prefixed(prefix: &str, lines: &[String]) -> Vec<String> {
     out
 }
 
+/// An edge label with `prefix` (an unlabelled edge gets `prefix` alone).
+fn edge_label(prefix: &str, label: Option<&[String]>) -> Option<Vec<String>> {
+    Some(prefixed(prefix, label.unwrap_or_default()))
+}
+
 fn mark(node: &mut NodeDef, mark: Mark, prefix: &str) {
     node.mark = mark;
     node.lines = prefixed(prefix, &node.lines);
@@ -63,16 +68,12 @@ type EdgeKey = (String, String, usize);
 
 fn edge_keys(graph: &Graph) -> Vec<EdgeKey> {
     let mut seen: HashMap<(usize, usize), usize> = HashMap::new();
-    let nth = |e: &EdgeDef, seen: &mut HashMap<_, usize>| {
-        let n = seen.entry((e.src, e.dst)).or_default();
-        *n += 1;
-        *n
+    let key = |e: &EdgeDef| {
+        let nth = seen.entry((e.src, e.dst)).or_default();
+        *nth += 1;
+        (graph.nodes[e.src].id.clone(), graph.nodes[e.dst].id.clone(), *nth)
     };
-    graph
-        .edges
-        .iter()
-        .map(|e| (graph.nodes[e.src].id.clone(), graph.nodes[e.dst].id.clone(), nth(e, &mut seen)))
-        .collect()
+    graph.edges.iter().map(key).collect()
 }
 
 /// The index of the group titled `title` in `graph`, adding it if needed.
@@ -114,10 +115,10 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
         match old_edges.get(key) {
             None => {
                 e.style = Style::Thick;
-                e.label = Some(prefixed("+", e.label.as_deref().unwrap_or(&[])));
+                e.label = edge_label("+", e.label.as_deref());
             }
             Some(o) if o.label != e.label || o.style != e.style => {
-                e.label = Some(prefixed("~", e.label.as_deref().unwrap_or(&[])));
+                e.label = edge_label("~", e.label.as_deref());
             }
             Some(_) => {}
         }
@@ -126,7 +127,7 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
     for (e, key) in before.edges.iter().zip(edge_keys(before)) {
         if !new_keys.contains(&key) {
             let (src, dst) = (index[&key.0], index[&key.1]);
-            let label = Some(prefixed("-", e.label.as_deref().unwrap_or(&[])));
+            let label = edge_label("-", e.label.as_deref());
             g.edges.push(EdgeDef { src, dst, label, style: Style::Dotted, arrow: e.arrow });
         }
     }

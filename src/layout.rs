@@ -541,8 +541,7 @@ impl Layout {
             let nd = &self.nodes[n];
             let c = nd.cen();
             let (lo, hi) = if nd.kind == Kind::Real { (nd.pos + 1, nd.pos + nd.csize - 2) } else { (c, c) };
-            let mut used: Vec<i64> = Vec::new();
-            let mut groups = groups.clone();
+            let (mut used, mut groups): (Vec<i64>, _) = (Vec::new(), groups.clone());
             groups.sort_by_key(Option::is_some);
             for g in groups {
                 let x = if g.is_none() {
@@ -680,6 +679,7 @@ impl Layout {
 
     fn paint(&self, ascii: bool) -> String {
         let mut p = Painter::new(ascii);
+        p.mark_crossings = true;
         let in_l = |n: usize| self.bstart[self.nodes[n].layer];
         let out_l = |n: usize| in_l(n) + self.nodes[n].lsize - 1;
         for nd in &self.nodes {

@@ -150,8 +150,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fitted> {
             }
         }
     }
-    let mut cuts = vec![];
-    let mut j = n;
+    let (mut cuts, mut j) = (vec![], n);
     while j > 0 {
         let (_, _, _, i) = best[j]?;
         cuts.push(i);

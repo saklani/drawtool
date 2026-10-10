@@ -179,7 +179,7 @@ done -.->|back| home";
 /// Cells where a vertical line passes straight through a horizontal one.
 fn crossings(out: &str) -> usize {
     let rows: Vec<Vec<char>> = out.lines().map(|l| l.chars().collect()).collect();
-    let (v, h) = ("│┆┃║", "─┄━═");
+    let (v, h) = ("│┆┃║╂", "─┄━═");
     rows.iter()
         .map(|r| {
             (1..r.len().saturating_sub(1))
@@ -204,4 +204,5 @@ fn unrelated_edges_are_never_drawn_as_joined() {
     // into one net, so their crossings rendered as ┼ joins.
     let out = render(&parse("flowchart LR\nb --> e & f\nc --> e & g\nd --> f & g\nb --> g").unwrap(), None, false);
     assert!(!out.contains('┼'), "\n{out}");
+    assert!(out.contains('╂'), "crossings are marked:\n{out}");
 }

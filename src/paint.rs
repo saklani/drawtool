@@ -86,6 +86,9 @@ pub fn first_fit(max: usize, attempts: impl IntoIterator<Item = String>) -> Fit 
 #[derive(Default)]
 pub struct Painter {
     pub ascii: bool,
+    /// Draw crossings as `╂` (flowcharts), so they can't be mistaken for a
+    /// `┼` join; otherwise the vertical line just runs through (lifelines).
+    pub mark_crossings: bool,
     /// Text and symbols; the flag marks symbols, which ASCII mode translates.
     glyphs: HashMap<Pt, (char, bool)>,
     /// Main lines, then the under layer (shown only in otherwise empty cells).
@@ -230,7 +233,8 @@ impl Painter {
         let pure = arms.iter().all(|a| a.bits & VERT == 0 || a.bits & HORZ == 0);
         let full_v = arms.iter().find(|a| a.bits == VERT);
         if let Some(v) = full_v.filter(|_| pure && arms.iter().any(|a| a.bits == HORZ)) {
-            return self.straight(v.weight, v.style, true); // a crossing, not a join
+            // A crossing, not a join.
+            return if self.mark_crossings && !self.ascii { '╂' } else { self.straight(v.weight, v.style, true) };
         }
         let bits = arms.iter().fold(0, |b, a| b | a.bits);
         let style = if arms.iter().all(|a| a.style == arms[0].style) { arms[0].style } else { Style::Solid };

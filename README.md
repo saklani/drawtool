@@ -320,6 +320,7 @@ end
 
 Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`.
 Cycles, self-loops and `subgraph ... end` groups (nested ones are flattened) are supported.
+In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).
 Unlike Mermaid, a diagram without a `flowchart` line is drawn left-to-right.
 
 ## Claude Code skill

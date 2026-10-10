@@ -3,7 +3,7 @@
 //! crossing a break wraps around like text, several are joined by numbered
 //! connectors (①). TD only ever wraps labels.
 
-use crate::layout::{node_layers, render, scene, Scene};
+use crate::layout::{draw, scene, structure, Scene, Structure};
 use crate::model::{Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::paint::{Layer, Painter, Pt, Stroke};
 use crate::text::{block_width, first_fit, wrap, Fit};
@@ -32,11 +32,13 @@ fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
 /// If nothing fits, returns the narrowest single-band attempt.
 #[must_use]
 pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fit {
-    let first = first_fit(max_width, WRAPS.iter().map(|&w| render(&wrapped(graph, w), Some(direction), ascii)));
+    // Wrapping labels leaves the structure as it is: work it out once.
+    let s = structure(graph);
+    let first = first_fit(max_width, WRAPS.iter().map(|&w| draw(&wrapped(graph, w), &s, Some(direction), ascii)));
     if first.fits || direction == Direction::TD {
         return first;
     }
-    WRAPS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), ascii, max_width)).unwrap_or(first)
+    WRAPS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), &s, ascii, max_width)).unwrap_or(first)
 }
 
 fn connector_label(n: usize, ascii: bool) -> String {
@@ -96,14 +98,15 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
 
 /// Split the layers into consecutive LR bands that each fit, choosing the
 /// cuts by dynamic programming. `None` if a single layer is too wide on its own.
-fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
-    let layers = node_layers(graph);
+fn fit_bands(graph: &Graph, s: &Structure, ascii: bool, max_width: usize) -> Option<Fit> {
+    let layers = &s.layer;
     let distinct: Vec<usize> = layers.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
     let band_of = |cuts: &[usize]| -> Vec<usize> {
         layers.iter().map(|l| cuts.iter().filter(|&&c| distinct[c] <= *l).count() - 1).collect()
     };
     let fits = |cuts: &[usize], b: usize| {
-        let text = render(&band_graph(graph, &band_of(cuts), b, ascii), Some(Direction::LR), ascii);
+        let band = band_graph(graph, &band_of(cuts), b, ascii);
+        let text = draw(&band, &structure(&band), Some(Direction::LR), ascii);
         (block_width(&text) as usize <= max_width).then_some(text)
     };
     // Height of band [i, j) of the distinct layers, if it fits on its own.
@@ -148,7 +151,8 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     }
     let band_of = band_of(&cuts);
     let graphs: Vec<Graph> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b, ascii)).collect();
-    let scenes = graphs.iter().map(|g| scene(g, Some(Direction::LR), ascii)).collect::<Option<Vec<_>>>()?;
+    let scenes =
+        graphs.iter().map(|g| scene(g, &structure(g), Some(Direction::LR), ascii)).collect::<Option<Vec<_>>>()?;
     let width = scenes.iter().map(|s| block_width(&s.painter.finish()) as usize).max().unwrap_or(0);
     let text = join_bands(graph, &band_of, &graphs, scenes, ascii);
     (width <= max_width).then_some(Fit { text, width, fits: true })

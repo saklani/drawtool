@@ -196,6 +196,21 @@ impl IntoNeighbors for SourceOrder<'_> {
     }
 }
 
+/// What layout takes from a graph's connections alone. Wrapping labels
+/// doesn't change it, so it is worked out once per graph.
+pub(crate) struct Structure {
+    /// For each edge, whether it closes a cycle (it is drawn as a back edge).
+    back: Vec<bool>,
+    /// Each node's layer.
+    pub layer: Vec<usize>,
+}
+
+/// Find the back edges, then layer the nodes.
+pub(crate) fn structure(graph: &Graph) -> Structure {
+    let back = back_edges(graph);
+    Structure { layer: layers(graph, &back), back }
+}
+
 /// For each edge, whether it closes a cycle: depth-first search, from the
 /// sources first and then from any node not yet reached, finds it leading
 /// back to a node still on the search path. Self-loops don't count.
@@ -268,11 +283,11 @@ fn crossings(layers: &[Vec<usize>], nodes: &[Node]) -> usize {
     total
 }
 
-/// Layer the nodes, mark back edges, and turn edge labels into nodes.
-fn layer_graph(graph: &Graph) -> (Vec<Node>, Vec<Edge>) {
-    let back = back_edges(graph);
-    let mut nodes: Vec<Node> = (graph.g.node_weights().zip(layers(graph, &back)))
-        .map(|(n, layer)| Node {
+/// Layout's own nodes and edges, with the layers and back edges of `s`, and
+/// each edge label a node of its own.
+fn layer_graph(graph: &Graph, s: &Structure) -> (Vec<Node>, Vec<Edge>) {
+    let mut nodes: Vec<Node> = (graph.g.node_weights().zip(&s.layer))
+        .map(|(n, &layer)| Node {
             shape: n.shape,
             mark: n.mark,
             layer,
@@ -282,7 +297,7 @@ fn layer_graph(graph: &Graph) -> (Vec<Node>, Vec<Edge>) {
         .collect();
     let mut edges = Vec::new();
     for e in graph.g.edge_references() {
-        let (src, dst, rev, d) = (e.source().index(), e.target().index(), back[e.id().index()], e.weight());
+        let (src, dst, rev, d) = (e.source().index(), e.target().index(), s.back[e.id().index()], e.weight());
         if src == dst {
             nodes[src].looped = Some((d.style, d.arrow));
             continue;
@@ -296,13 +311,6 @@ fn layer_graph(graph: &Graph) -> (Vec<Node>, Vec<Edge>) {
         edges.push(Edge { src, dst, label: d.label.clone(), style: d.style, arrow: d.arrow, rev, path });
     }
     (nodes, edges)
-}
-
-/// Layer index of every real node, as the layout would assign it. Labelled
-/// edges take an extra layer for the label.
-#[must_use]
-pub fn node_layers(graph: &Graph) -> Vec<usize> {
-    layers(graph, &back_edges(graph))
 }
 
 // Phases of a `Layout`, named for what has been decided so far.
@@ -346,7 +354,12 @@ struct Layout<Phase> {
 /// Render a parsed graph as text. `direction` overrides the graph's own.
 #[must_use]
 pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> String {
-    scene(graph, direction, ascii).map_or_else(String::new, |s| s.painter.finish())
+    draw(graph, &structure(graph), direction, ascii)
+}
+
+/// [`render`] with the graph's structure already worked out.
+pub(crate) fn draw(graph: &Graph, s: &Structure, direction: Option<Direction>, ascii: bool) -> String {
+    scene(graph, s, direction, ascii).map_or_else(String::new, |s| s.painter.finish())
 }
 
 /// A laid-out graph before it becomes text: what was painted, and each
@@ -356,13 +369,13 @@ pub(crate) struct Scene {
     pub boxes: Vec<(Pt, Pt)>,
 }
 
-/// Lay out and paint `graph`; `None` if it has no nodes.
-pub(crate) fn scene(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Option<Scene> {
+/// Lay out and paint `graph`, whose structure is `s`; `None` if it has no nodes.
+pub(crate) fn scene(graph: &Graph, s: &Structure, direction: Option<Direction>, ascii: bool) -> Option<Scene> {
     if graph.g.node_count() == 0 {
         return None;
     }
     let td = direction.unwrap_or(graph.direction) == Direction::TD;
-    Some(Layout::new(graph, td).order().place().route().paint(ascii))
+    Some(Layout::new(graph, s, td).order().place().route().paint(ascii))
 }
 
 impl<P> Layout<P> {
@@ -389,8 +402,8 @@ impl<P> Layout<P> {
 }
 
 impl Layout<Layered> {
-    fn new(graph: &Graph, td: bool) -> Self {
-        let (mut nodes, edges) = layer_graph(graph);
+    fn new(graph: &Graph, s: &Structure, td: bool) -> Self {
+        let (mut nodes, edges) = layer_graph(graph, s);
         let layers = vec![vec![]; make_room_for_back_edges(&mut nodes, &edges)];
         let titles = graph.groups.iter().map(|g| g.title.clone()).collect();
         let gap = if td { 3 } else { 1 };
@@ -1047,7 +1060,7 @@ mod tests {
     #[test]
     fn break_cycles_marks_only_the_closing_edge() {
         let g = graph("a --> b\nb --> c\nc --> a\na --> d\nd --> c");
-        let (_, edges) = layer_graph(&g);
+        let (_, edges) = layer_graph(&g, &structure(&g));
         let rev: Vec<(usize, usize)> = edges.iter().filter(|e| e.rev).map(|e| (e.src, e.dst)).collect();
         assert_eq!(rev, [(id(&g, "c"), id(&g, "a"))]);
     }
@@ -1055,20 +1068,20 @@ mod tests {
     #[test]
     fn layers_of_a_chain_and_a_diamond() {
         let g = graph("a --> b\nb --> c");
-        assert_eq!(node_layers(&g), [0, 1, 2]);
+        assert_eq!(structure(&g).layer, [0, 1, 2]);
         let g = graph("a --> b\na --> c\nb --> d\nc --> d");
-        let layers = node_layers(&g);
+        let layers = structure(&g).layer;
         assert_eq!([layers[id(&g, "a")], layers[id(&g, "b")], layers[id(&g, "c")], layers[id(&g, "d")]], [0, 1, 1, 2]);
         // A source is pulled down next to its child; a label takes a layer.
         let g = graph("a --> b\nb --> c\nx --> c\nc -->|yes| d");
-        let layers = node_layers(&g);
+        let layers = structure(&g).layer;
         assert_eq!([layers[id(&g, "x")], layers[id(&g, "d")]], [1, 4]);
     }
 
     #[test]
     fn long_edges_into_one_node_share_dummies_by_style() {
         let g = graph("a --> b\nb --> c\nc --> d\na --> d\nz --> b\nz --> d\nz -.-> d");
-        let l = Layout::new(&g, true);
+        let l = Layout::new(&g, &structure(&g), true);
         let inner = |e: &Edge| e.path[1..e.path.len() - 1].to_vec();
         let (a_d, z_d, z_dotted) = (&l.edges[3], &l.edges[5], &l.edges[6]);
         assert_eq!(inner(a_d).len(), 2);
@@ -1081,7 +1094,7 @@ mod tests {
     fn transpose_removes_a_simple_crossing() {
         let g = graph("a --> c\nb --> d");
         let (a, b, c, d) = (id(&g, "a"), id(&g, "b"), id(&g, "c"), id(&g, "d"));
-        let mut l = Layout::new(&g, true);
+        let mut l = Layout::new(&g, &structure(&g), true);
         l.rank = vec![0; l.nodes.len()];
         l.layers = vec![vec![a, b], vec![d, c]];
         assert_eq!(crossings(&l.layers, &l.nodes), 1);
@@ -1093,7 +1106,7 @@ mod tests {
     fn crossings_count_every_pair_once() {
         // Each of a's two edges crosses each of b's: four crossings.
         let g = graph("a --> d\na --> e\nb --> c\nb --> f");
-        let mut l = Layout::new(&g, true);
+        let mut l = Layout::new(&g, &structure(&g), true);
         let n = |s| id(&g, s);
         l.layers = vec![vec![n("a"), n("b")], vec![n("c"), n("f"), n("d"), n("e")]];
         assert_eq!(crossings(&l.layers, &l.nodes), 4);

@@ -632,13 +632,23 @@ impl Layout {
 
     // ---- Back edges ---------------------------------------------------------
 
+    /// Every node's cross-axis extent, frames included.
+    fn extent(&self) -> (i64, i64) {
+        let lo = self.nodes.iter().map(|n| n.framed().0).min().unwrap_or(0);
+        (lo, self.nodes.iter().map(|n| n.framed().1).max().unwrap_or(0))
+    }
+
+    /// Whether a back edge's lane goes on the low side (before every node):
+    /// the side nearer the middle of its ends.
+    fn low_side(&self, edge: usize) -> bool {
+        let (e, (lo, hi)) = (&self.edges[edge], self.extent());
+        self.nodes[e.src].cen() + self.nodes[e.dst].cen() < lo + hi
+    }
+
     /// A cross-axis point far out on the side a back edge's lane will use,
     /// for choosing which side of a box its ports go on.
     fn lane_hint(&self, edge: usize) -> i64 {
-        let e = &self.edges[edge];
-        let (src, dst) = (self.nodes[e.src].cen(), self.nodes[e.dst].cen());
-        let (lo, hi) = self.nodes.iter().fold((i64::MAX, i64::MIN), |(a, b), n| (a.min(n.pos), b.max(n.pos + n.csize)));
-        if src + dst < lo + hi {
+        if self.low_side(edge) {
             -(1 << 30)
         } else {
             1 << 30
@@ -648,17 +658,15 @@ impl Layout {
     /// Outer lanes for back edges, beyond every node and frame on the side
     /// nearer the edge's ends; shorter edges run inside longer ones.
     fn back_lanes(&mut self) {
-        let lo = self.nodes.iter().map(|n| n.framed().0).min().unwrap_or(0) - 2;
-        let hi = self.nodes.iter().map(|n| n.framed().1).max().unwrap_or(0) + 2;
-        let (mut near, mut far) = (lo, hi);
+        let (lo, hi) = self.extent();
+        let (mut near, mut far) = (lo - 2, hi + 2);
         let mut order: Vec<usize> = (0..self.backs.len()).collect();
         order.sort_by_key(|&b| {
             let e = &self.edges[self.backs[b].edge];
             self.nodes[e.src].layer - self.nodes[e.dst].layer
         });
         for b in order {
-            let e = &self.edges[self.backs[b].edge];
-            let low = self.nodes[e.src].cen() + self.nodes[e.dst].cen() < lo + hi;
+            let (e, low) = (&self.edges[self.backs[b].edge], self.low_side(self.backs[b].edge));
             // In TD the label sits beside the (vertical) lane, so leave room.
             let label = e.label.as_ref().map_or(0, |l| width(&l.join(" ")) + 1);
             let step = 2 + if self.td { label } else { 0 };

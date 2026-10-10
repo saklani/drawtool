@@ -32,6 +32,12 @@ pub struct NodeDef {
     explicit: bool,
 }
 
+impl NodeDef {
+    pub fn new(id: &str, lines: Vec<String>, shape: Shape) -> Self {
+        NodeDef { id: id.to_string(), lines, shape, explicit: true }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EdgeDef {
     pub src: usize,
@@ -225,7 +231,7 @@ impl Parser {
 /// Parse diagram source into a graph.
 pub fn parse(text: &str) -> Result<Graph, String> {
     let pats = patterns();
-    let mut direction = Direction::TD;
+    let mut direction = Direction::LR;
     let mut p = Parser { nodes: Vec::new(), index: HashMap::new(), edges: Vec::new() };
     for (lineno, raw) in text.lines().enumerate() {
         let line = raw.trim().trim_end_matches(';').trim();

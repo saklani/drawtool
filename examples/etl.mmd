@@ -1,4 +1,4 @@
-graph LR
+flowchart LR
 in[raw bytes] --> dec(decode) --> v{schema ok?}
 v -- no --> dlq[(dead letter)]
 v -- yes --> t[transform] --> out[(warehouse)]

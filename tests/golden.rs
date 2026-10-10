@@ -1,4 +1,5 @@
-//! Snapshot tests: every examples/*.mmd must render exactly as tests/golden/*.txt.
+//! Snapshot tests: every examples/*.mmd, fitted to 120 columns, must render
+//! exactly as tests/golden/*.txt.
 //! Regenerate after an intentional change with: UPDATE_GOLDEN=1 cargo test
 
 use std::fs;
@@ -19,7 +20,7 @@ fn examples_match_golden_output() {
         let stem = path.file_stem().unwrap().to_str().unwrap();
         for (ascii, suffix) in [(false, "txt"), (true, "ascii.txt")] {
             count += 1;
-            let got = drawtool::render(&graph, None, ascii) + "\n";
+            let got = drawtool::render_fit(&graph, graph.direction, ascii, 120).text + "\n";
             let golden = root.join("tests/golden").join(format!("{stem}.{suffix}"));
             if update {
                 fs::write(&golden, &got).unwrap();

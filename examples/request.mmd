@@ -1,4 +1,4 @@
-flowchart TD
+flowchart LR
 req[HTTP request] --> parse(parse_body)
 parse --> ok{valid?}
 ok -->|yes| save[(db.insert)]

@@ -1,4 +1,4 @@
-flowchart TD
+flowchart LR
 src[diagram text] --> parse(parse) -->|nodes, edges| cyc(break_cycles)
 cyc --> lay(layering<br>+ dummy nodes) --> ord(crossing reduction) --> pos(place: PAVA)
 pos --> route(ports + track routing) --> draw(draw grid) -->|str| out[stdout]

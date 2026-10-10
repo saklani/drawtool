@@ -241,14 +241,8 @@ fn crossings(layers: &[Vec<usize>], down: &[Vec<usize>]) -> usize {
     total
 }
 
-/// Render a parsed graph as text. `direction` overrides the graph's own.
-pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> String {
-    if graph.nodes.is_empty() {
-        return String::new();
-    }
-    let td = direction.unwrap_or(graph.direction) == Direction::TD;
-    let gl = Glyphs { ascii };
-
+/// Break cycles, turn edge labels into nodes, and assign each node a layer.
+fn layer_graph(graph: &Graph, gl: &Glyphs) -> (Vec<LNode>, Vec<Edge>, Vec<Vec<usize>>, Vec<i64>) {
     let mut ln: Vec<LNode> =
         graph.nodes.iter().map(|n| LNode::new(n.lines.clone(), n.shape, Kind::Real)).collect();
     let nreal = ln.len();
@@ -320,9 +314,29 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         }
     }
 
+    (ln, edges, chains, layer)
+}
+
+/// Layer index of every real node, as the layout would assign it. Labelled
+/// edges take an extra layer for the label.
+pub fn node_layers(graph: &Graph) -> Vec<i64> {
+    let (_, _, _, layer) = layer_graph(graph, &Glyphs { ascii: false });
+    layer[..graph.nodes.len()].to_vec()
+}
+
+/// Render a parsed graph as text. `direction` overrides the graph's own.
+pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> String {
+    if graph.nodes.is_empty() {
+        return String::new();
+    }
+    let td = direction.unwrap_or(graph.direction) == Direction::TD;
+    let gl = Glyphs { ascii };
+
+    let (mut ln, mut edges, chains, mut layer) = layer_graph(graph, &gl);
+
     // Dummy nodes for segments spanning several layers.
-    let mut up: Vec<Vec<usize>> = vec![Vec::new(); n1];
-    let mut down: Vec<Vec<usize>> = vec![Vec::new(); n1];
+    let mut up: Vec<Vec<usize>> = vec![Vec::new(); ln.len()];
+    let mut down: Vec<Vec<usize>> = vec![Vec::new(); ln.len()];
     for (e, chain) in edges.iter_mut().zip(&chains) {
         let mut path = vec![chain[0]];
         for w in chain.windows(2) {
@@ -637,7 +651,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
         if k < nl - 1 {
             let ss = &chan[k];
             let ntracks = ss.iter().filter(|&&i| segs[i].cs != segs[i].ct).map(|&i| segs[i].track + 1).max().unwrap_or(0);
-            lead[k] = if !td { 2 } else if ss.iter().any(|&i| segs[i].arrow_start) { 1 } else { 0 };
+            lead[k] = if !td { 1 } else if ss.iter().any(|&i| segs[i].arrow_start) { 1 } else { 0 };
             cstart[k] = cur;
             cur += lead[k] + ntracks + 1;
         }

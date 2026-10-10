@@ -1,4 +1,4 @@
-use drawtool::{parse, render, Direction};
+use drawtool::{parse, render_fit, Direction};
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -13,11 +13,14 @@ Arguments:
 Options:
   -a, --ascii            plain ASCII output
   -d, --direction <DIR>  override layout direction: TD or LR
+  -w, --max-width <N>    column budget (default: $COLUMNS, else 120; 0 = unlimited).
+                         Too-wide diagrams get their labels wrapped first; an LR
+                         diagram that still doesn't fit is drawn TD instead.
   -h, --help             print help
   -V, --version          print version
 
 Syntax (a subset of Mermaid flowcharts):
-  flowchart TD              # TD = top-down (default), LR = left-to-right
+  flowchart LR              # LR = left-to-right (default), TD = top-down
   req[HTTP request] --> parse(parse_body)
   parse --> ok{valid?}
   ok -->|yes| save[(db.insert)]
@@ -40,6 +43,7 @@ fn main() -> ExitCode {
     let mut ascii = false;
     let mut direction = None;
     let mut file: Option<String> = None;
+    let mut max_width: usize = std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).unwrap_or(120);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -66,6 +70,15 @@ fn main() -> ExitCode {
                     _ => return fail(&format!("invalid direction {v:?} (use TD or LR)")),
                 };
             }
+            "-w" | "--max-width" => {
+                let Some(v) = inline.or_else(|| args.next()) else {
+                    return fail("--max-width needs a number");
+                };
+                let Ok(n) = v.parse() else {
+                    return fail(&format!("invalid --max-width {v:?}"));
+                };
+                max_width = n;
+            }
             "-" => file = None,
             f if f.starts_with('-') => return fail(&format!("unknown option {f} (see --help)")),
             _ => file = Some(arg),
@@ -87,7 +100,15 @@ fn main() -> ExitCode {
     };
     match parse(&text) {
         Ok(graph) => {
-            println!("{}", render(&graph, direction, ascii));
+            let wanted = direction.unwrap_or(graph.direction);
+            let fitted = render_fit(&graph, wanted, ascii, max_width);
+            if fitted.direction != wanted {
+                eprintln!("drawtool: note: too wide for LR in {max_width} columns, drew TD instead");
+            }
+            if !fitted.fits {
+                eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
+            }
+            println!("{}", fitted.text);
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e),

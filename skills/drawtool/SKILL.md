@@ -9,7 +9,7 @@ description: Sketch a quick box-and-arrow diagram in the terminal. Use when the 
 
 ```bash
 drawtool <<'EOF'
-flowchart TD
+flowchart LR
 req[request] --> parse(parse_body)
 parse --> ok{valid?}
 ok -->|yes| save[(db.insert)]
@@ -24,7 +24,7 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 
 | Write | Meaning |
 |---|---|
-| `flowchart TD` / `flowchart LR` | top-down (default) / left-to-right |
+| `flowchart LR` / `flowchart TD` | left-to-right (preferred) / top-down |
 | `a[text]` `a(text)` `a{text}` | box / rounded (function, process) / decision (double border) |
 | `a --> b`, `a --> b --> c` | arrow, chains |
 | `a -->\|label\| b` or `a -- label --> b` | labelled edge (what data flows) |
@@ -34,7 +34,10 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 | `%% comment` | comment |
 
 Define a node's label once (`p(parse_body)`), then refer to it by id (`p`). Cycles and self-loops work.
-Flags: `--ascii` for plain ASCII, `-d LR` to override direction.
+Flags: `--ascii` for plain ASCII, `-d TD` to override direction, `-w N` column budget
+(default 120). A too-wide LR diagram gets its labels wrapped, then is broken into stacked bands
+joined by numbered connectors (①); only as a last resort is it drawn TD, with a `note:` on
+stderr. Never paste that note into the reply.
 If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --path /Users/shauryasaklani/Development/drawtool`.
 
@@ -44,8 +47,11 @@ If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
   (`-->|raw bytes|`, `-->|User dict|`). Don't invent steps.
 - Keep it small: about 4 to 12 nodes. Collapse helpers into their caller; split a big flow into
   two diagrams instead of one huge one.
-- Use LR for linear pipelines and TD for branching/fan-out.
-- Keep labels short (< 25 chars). If the output is wider than ~100 columns, switch direction,
-  shorten labels, or split the diagram.
+- Always use `flowchart LR`: it reads like a sentence and needs no scrolling.
+- If a flow is too long for one line, break it yourself at a meaningful seam (request path,
+  then processing, then storage) into several short LR diagrams, each with its own heading.
+- If there is no clean seam, let drawtool wrap it into bands. Accept TD only when drawtool
+  falls back to it, and then try splitting the diagram first.
+- Keep labels short (< 25 chars); drawtool wraps them only when it has to.
 - Use `{decision}` for branches, with edge labels on each branch (`yes`/`no`, `cache hit`/`miss`).
 - If drawtool reports a parse error, fix the line it names and rerun.

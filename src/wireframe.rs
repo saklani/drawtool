@@ -22,13 +22,16 @@ pub const DEFAULT_WIDTH: usize = 40;
 pub const MIN_WIDTH: usize = 20;
 const SCREEN_GAP: i64 = 3;
 const ROW_GAP: i64 = 2;
+/// A `row` whose columns would be narrower than this stacks its children.
+const MIN_COLUMN: i64 = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Align {
     Left,
     Center,
     Right,
-    /// Left, unless a `row` places it: first left, last right, middle centred.
+    /// Plain `text:` (or an unlabelled line): left-aligned, except as a direct
+    /// child of a `row`, where the first is left, the last right, the rest centred.
     Auto,
 }
 
@@ -80,6 +83,7 @@ pub struct Wireframe {
 }
 
 /// True if the first meaningful line starts a wireframe.
+#[must_use]
 pub fn is_wireframe(text: &str) -> bool {
     text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%")).is_some_and(is_screen_header)
 }
@@ -94,7 +98,10 @@ fn is_screen_header(line: &str) -> bool {
 
 struct Line<'a> {
     no: usize,
+    /// Indentation depth (a tab counts as 4).
     indent: usize,
+    /// Leading whitespace characters, for error columns.
+    lead: usize,
     text: &'a str,
 }
 
@@ -110,21 +117,25 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, Error> {
         .enumerate()
         .filter(|(_, raw)| !raw.trim().is_empty() && !raw.trim().starts_with("%%"))
         .map(|(i, raw)| {
-            let indent = raw.chars().take_while(|c| c.is_whitespace()).map(|c| if c == '\t' { 4 } else { 1 }).sum();
-            Line { no: i + 1, indent, text: strip_comment(raw.trim()) }
+            let lead: Vec<char> = raw.chars().take_while(|c| c.is_whitespace()).collect();
+            let indent = lead.iter().map(|&c| if c == '\t' { 4 } else { 1 }).sum();
+            Line { no: i + 1, indent, lead: lead.len(), text: strip_comment(raw.trim()) }
         })
         .collect();
     let mut screens = Vec::new();
     let mut i = 0;
     while let Some(line) = lines.get(i) {
         if !is_screen_header(line.text) {
-            return Err(Error::at(line.no, "expected `wireframe [title]`"));
+            return Err(Error::at_column(line.no, line.lead + 1, "expected `wireframe [title]`"));
         }
         let (mut title, mut width) = (Vec::new(), DEFAULT_WIDTH);
         for word in line.text.split_whitespace().skip(1) {
             match word.strip_prefix("width=") {
                 Some(n) => {
-                    width = n.parse::<usize>().map_err(|_| Error::at(line.no, format!("invalid width {n:?}")))?
+                    let column = line.lead + 1 + line.text[..line.text.find(word).unwrap_or(0)].chars().count();
+                    width = n
+                        .parse::<usize>()
+                        .map_err(|_| Error::at_column(line.no, column, format!("invalid width {n:?}")))?;
                 }
                 None => title.push(word),
             }
@@ -145,7 +156,14 @@ fn parse_block(lines: &[Line], i: &mut usize, indent: usize) -> Result<Vec<El>, 
     let mut out = Vec::new();
     while let Some(line) = lines.get(*i).filter(|l| !is_screen_header(l.text) && l.indent >= indent) {
         if line.indent > indent {
-            return Err(Error::at(line.no, "unexpected indentation (only card, row and col take children)"));
+            // Coming back out of a deeper block to a depth no block uses, or
+            // indenting under an element that can't hold children.
+            let message = if lines.get(*i - 1).is_some_and(|prev| prev.indent > line.indent) {
+                "indentation doesn't line up with any enclosing element"
+            } else {
+                "unexpected indentation (only card, row and col take children)"
+            };
+            return Err(Error::at_column(line.no, line.lead + 1, message));
         }
         *i += 1;
         let deeper = lines.get(*i).filter(|l| l.indent > indent && !is_screen_header(l.text)).map(|l| l.indent);
@@ -268,9 +286,14 @@ fn put(p: &mut Painter, x: i64, y: i64, w: i64, s: &str, align: Align) {
     p.text(x + dx, y, &s);
 }
 
-/// Wrapped text; returns its height.
+/// Wrapped text; returns its height. With no room at all it takes one
+/// (empty) row rather than a column of single characters.
 fn para(p: &mut Painter, (x, y): (i64, i64), w: i64, s: &str, align: Align) -> i64 {
-    let lines = wrap(s, w as usize, true);
+    let Ok(room) = usize::try_from(w) else { return 1 };
+    if room == 0 {
+        return 1;
+    }
+    let lines = wrap(s, room, true);
     for (k, l) in lines.iter().enumerate() {
         put(p, x, y + k as i64, w, l, align);
     }
@@ -316,15 +339,20 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
             1
         }
         El::Header(slots) => {
-            let n = slots.len().min(3);
-            for (i, slot) in slots.iter().take(3).enumerate() {
-                let align = match (i, n) {
-                    (0, _) => Align::Left,
-                    (1, 2) | (2, _) => Align::Right,
-                    _ => Align::Center,
-                };
-                put(p, x, y, w, slot, align);
-            }
+            // Left and right slots first; the centre gets what's between them
+            // (symmetrically, so it stays centred) instead of overlapping them.
+            let slot = |i: usize| slots.get(i).map_or("", String::as_str);
+            let (left, centre, right) = match slots.len() {
+                0 | 1 => (slot(0), "", ""),
+                2 => (slot(0), "", slot(1)),
+                _ => (slot(0), slot(1), slot(2)),
+            };
+            let lw = width(left).min(w);
+            let rw = width(right).min((w - lw - 1).max(0));
+            put(p, x, y, lw, left, Align::Left);
+            put(p, x + w - rw, y, rw, right, Align::Left);
+            let side = lw.max(rw) + 1;
+            put(p, x + side, y, w - 2 * side, centre, Align::Center);
             rule(p, x, y + 1, w, edge);
             2
         }
@@ -353,11 +381,16 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
             5
         }
         El::Card { title, children } => frame(p, title, children, (x, y), w),
-        El::Col(children) => draw_all(p, children, (x, y), w, 0),
+        // A column fills its parent's width, so its dividers still reach the frame.
+        El::Col(children) => draw_all(p, children, (x, y), w, edge),
         El::Row(children) => {
             let n = children.len() as i64;
             let room = (w - ROW_GAP * (n - 1)).max(0);
             let (base, extra) = (room / n.max(1), room % n.max(1));
+            if n > 1 && base < MIN_COLUMN {
+                // Too many children to sit side by side: stack them instead.
+                return draw_all(p, children, (x, y), w, 0);
+            }
             let mut cx = x;
             let mut h = 0;
             for (i, c) in children.iter().enumerate() {
@@ -385,8 +418,8 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
             for (i, item) in items.iter().enumerate() {
                 let cw = if i as i64 == n - 1 { x + w - cx } else { w / n };
                 put(p, cx, y, cw, item, Align::Center);
-                if Some(i) == *active {
-                    let tw = width(&truncate(item, cw));
+                let tw = width(&truncate(item, cw));
+                if Some(i) == *active && tw > 0 {
                     let net = p.net();
                     let start = cx + (cw - tw) / 2;
                     p.line(&[(start, y + 1), (start + tw - 1, y + 1)], net, Stroke::HEAVY, Layer::Main);
@@ -403,29 +436,30 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
                 (false, true) => "[OFF]",
             };
             put(p, x, y, w - 6, label, Align::Left);
-            p.text(x + w - 5, y, switch);
+            put(p, x, y, w, switch, Align::Right);
             1
         }
         El::Checkbox(label, on) => hanging(p, (x, y), w, if *on { "[x] " } else { "[ ] " }, label),
         El::Radio(options, active) => {
             let dot = pick(p, "•", "*");
-            let options: Vec<String> = options
-                .iter()
-                .enumerate()
-                .map(|(i, o)| format!("({}) {o}", if Some(i) == *active { dot } else { " " }))
-                .collect();
-            let one = options.join("   ");
+            let marker = |i: usize| format!("({}) ", if Some(i) == *active { dot } else { " " });
+            let one: Vec<String> = options.iter().enumerate().map(|(i, o)| format!("{}{o}", marker(i))).collect();
+            let one = one.join("   ");
             if width(&one) <= w {
                 p.text(x, y, &one);
                 return 1;
             }
-            options.iter().fold(0, |h, o| h + para(p, (x, y + h), w, o, Align::Left))
+            // One option per line, wrapped under its own text like a checkbox.
+            options.iter().enumerate().fold(0, |h, (i, o)| h + hanging(p, (x, y + h), w, &marker(i), o))
         }
         El::Bullet(text, right) => {
+            // The right part (an amount, a date) gets at most half the row, so
+            // the item itself is never pushed out.
             let right = right.as_deref().unwrap_or("");
-            let room = if right.is_empty() { w } else { w - width(right) - 1 };
+            let rw = width(right).min((w - 1) / 2).max(0);
+            let room = if right.is_empty() { w } else { w - rw - 1 };
             let h = hanging(p, (x, y), room, pick(p, "• ", "* "), text);
-            put(p, x, y, w, right, Align::Right);
+            put(p, x + w - rw, y, rw, right, Align::Right);
             h
         }
     }
@@ -440,6 +474,7 @@ pub fn render_wireframe(wf: &Wireframe, ascii: bool) -> String {
 /// Render screens side by side, wrapping to a new row of screens when the
 /// next one would pass `max_width` (0 = unlimited). A screen wider than the
 /// budget is narrowed, down to `MIN_WIDTH`.
+#[must_use]
 pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> Fit {
     let mut p = Painter::new(ascii);
     let (mut x, mut y, mut row_h) = (0i64, 0i64, 0i64);

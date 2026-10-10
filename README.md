@@ -4,21 +4,24 @@ Render Mermaid-style flowcharts as box diagrams in the terminal. Left-to-right b
 so a diagram reads like a sentence and fits on screen without scrolling.
 
 ```
-                                                  ╭─────────────╮
-                                                ┌►│ dead letter │
-┌───────────┐  ╭────────╮  ╔════════════╗ ┌─no──┘ ╰─────────────╯
-│ raw bytes ├─►│ decode ├─►║ schema ok? ╟─┤
-└───────────┘  ╰────────╯  ╚════════════╝ └─yes─┐ ┌─────────────┐  ╭───────────╮
-                                                └►│ transform ↻ ├─►│ warehouse │
-                                                  └─────────────┘  ╰───────────╯
+                                          ┌─────┐
+                                        ┌►│ 401 │
+┌────────────────┐  ╔═══════════╗ ┌─no──┘ └─────┘
+│ GET /users/:id ├─►║ token ok? ╟─┤
+└────────────────┘  ╚═══════════╝ └─yes─┐ ╔═════════╗ ┌─yes─────────────────────────────────────┐ ┌────────┐
+                                        └►║ cached? ╟─┤                                         ├►│ 200 OK │
+                                          ╚═════════╝ └─no──┐ ╭──────────╮       ╭────────────╮ │ └────────┘
+                                                            └►│ postgres ├──row─►│ fill cache ├─┘
+                                                              ╰──────────╯       ╰────────────╯
 ```
 
 ```
 flowchart LR
-in[raw bytes] --> dec(decode) --> v{schema ok?}
-v -- no --> dlq[(dead letter)]
-v -- yes --> t[transform] --> out[(warehouse)]
-t --> t
+req[GET /users/:id] --> auth{token ok?}
+auth -->|no| err[401]
+auth -->|yes| hit{cached?}
+hit -->|yes| ok[200 OK]
+hit -->|no| db[(postgres)] -->|row| fill(fill cache) --> ok
 ```
 
 ## Install

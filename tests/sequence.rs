@@ -50,7 +50,16 @@ fn arrow_kinds() {
     use Head::*;
     assert_eq!(
         heads,
-        [(Arrow, false), (Arrow, true), (Open, false), (Open, true), (Cross, false), (Cross, true), (Arrow, false), (Arrow, false)]
+        [
+            (Arrow, false),
+            (Arrow, true),
+            (Open, false),
+            (Open, true),
+            (Cross, false),
+            (Cross, true),
+            (Arrow, false),
+            (Arrow, false)
+        ]
     );
 }
 
@@ -67,7 +76,8 @@ fn notes_on_every_side() {
         "sequenceDiagram\nNote left of a: L\nNote right of a: R\nNote over a: O\nNote over a,b: span\na->>b: x",
     )
     .unwrap();
-    let sides: Vec<NoteSide> = seq.items.iter().filter_map(|i| if let Item::Note(n) = i { Some(n.side) } else { None }).collect();
+    let sides: Vec<NoteSide> =
+        seq.items.iter().filter_map(|i| if let Item::Note(n) = i { Some(n.side) } else { None }).collect();
     assert_eq!(sides, [NoteSide::Left, NoteSide::Right, NoteSide::Over, NoteSide::Over]);
     let out = render_sequence(&seq, false);
     assert!(col(&out, "│ L │") < col(&out, "┬"), "left note sits left of the lifeline:\n{out}");
@@ -89,7 +99,10 @@ fn nested_loop_and_alt_frames() {
 
 #[test]
 fn ascii_output_is_pure_ascii() {
-    let out = render_sequence(&parse_sequence("sequenceDiagram\nloop x\na->>b: hi\nb-->>a: ok\nend\na->>a: self").unwrap(), true);
+    let out = render_sequence(
+        &parse_sequence("sequenceDiagram\nloop x\na->>b: hi\nb-->>a: ok\nend\na->>a: self").unwrap(),
+        true,
+    );
     assert!(out.is_ascii(), "\n{out}");
     assert!(out.contains("|<....") && out.contains("--->|"), "\n{out}");
 }
@@ -115,7 +128,9 @@ fn errors_name_the_line() {
 
 #[test]
 fn ignored_lines() {
-    let seq = parse_sequence("sequenceDiagram\nautonumber\ntitle Checkout\n%% note\nactivate a\na->>b: x\ndeactivate a").unwrap();
+    let seq =
+        parse_sequence("sequenceDiagram\nautonumber\ntitle Checkout\n%% note\nactivate a\na->>b: x\ndeactivate a")
+            .unwrap();
     assert_eq!(seq.items.len(), 1);
 }
 

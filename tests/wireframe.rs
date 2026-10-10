@@ -71,7 +71,22 @@ fn every_element_renders_rectangular() {
   nav: *Home | Profile",
     );
     assert_rectangular(&out, DEFAULT_WIDTH);
-    for needle in ["┌─ Everything", "├────", "┏━━", "Continue", "░ photo ░", "┌─ Details", "[x] Remember me", "(○  )", "(•) Card", "━━━━━━━━", "• Coffee", "-$4.50", "▾", "you@example.com"] {
+    for needle in [
+        "┌─ Everything",
+        "├────",
+        "┏━━",
+        "Continue",
+        "░ photo ░",
+        "┌─ Details",
+        "[x] Remember me",
+        "(○  )",
+        "(•) Card",
+        "━━━━━━━━",
+        "• Coffee",
+        "-$4.50",
+        "▾",
+        "you@example.com",
+    ] {
         assert!(out.contains(needle), "missing {needle:?} in\n{out}");
     }
 }

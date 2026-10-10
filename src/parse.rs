@@ -117,20 +117,12 @@ fn find_close(s: &str, start: usize, close: &str) -> Option<usize> {
 /// A failed statement: the byte offset where it went wrong, and why.
 type Fail = (usize, String);
 
-/// A `subgraph` block being read: its group, its line, and the nodes
-/// mentioned in it so far.
-struct Open {
-    group: usize,
-    line: usize,
-    nodes: Vec<usize>,
-}
-
 struct Parser {
     nodes: Vec<NodeDef>,
     index: HashMap<String, usize>,
     edges: Vec<EdgeDef>,
-    /// Open `subgraph` blocks, innermost last.
-    open: Vec<Open>,
+    /// Open `subgraph` blocks (group, line), innermost last.
+    open: Vec<(usize, usize)>,
 }
 
 impl Parser {
@@ -142,24 +134,19 @@ impl Parser {
         })
     }
 
-    /// Close the innermost subgraph. As in Mermaid, the first subgraph to
-    /// close claims the nodes mentioned in it, so inner ones win.
-    fn close(&mut self) -> bool {
-        let Some(open) = self.open.pop() else { return false };
-        for i in open.nodes {
-            self.nodes[i].group = self.nodes[i].group.or(Some(open.group));
-        }
-        true
-    }
-
     /// `id`, an optional shape with its label (the last one given wins, as
     /// in Mermaid), and an optional `:::class`, which is ignored.
     fn node(&mut self, s: &str, pos: usize) -> Result<(usize, usize), Fail> {
         let m = PATTERNS.id.find(&s[pos..]).ok_or_else(|| (pos, format!("expected a node id at {:?}", &s[pos..])))?;
         let id = m.as_str().split(":::").next().unwrap_or_default();
         let idx = self.node_id(id);
-        if let Some(open) = self.open.last_mut() {
-            open.nodes.push(idx);
+        // As in Mermaid, the first subgraph to close claims a node: one opened
+        // inside the node's group (still open) closes first, a sibling later.
+        if let Some(&(inner, _)) = self.open.last() {
+            let (open, group) = (&self.open, &mut self.nodes[idx].group);
+            if group.is_none_or(|g| open.iter().any(|o| o.0 == g)) {
+                *group = Some(inner);
+            }
         }
         let mut pos = pos + id.len();
         let mut unclosed = None;
@@ -265,11 +252,11 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             }
             let title = [2, 1, 3, 4].into_iter().find_map(|i| c.get(i)).map_or("", |m| m.as_str());
             groups.push(Group { title: label(title).join(" ") });
-            p.open.push(Open { group: groups.len() - 1, line: lineno + 1, nodes: Vec::new() });
+            p.open.push((groups.len() - 1, lineno + 1));
             continue;
         }
         if line == "end" {
-            if !p.close() {
+            if p.open.pop().is_none() {
                 return Err(Error::at(lineno + 1, "`end` without a matching `subgraph`"));
             }
             continue;
@@ -303,8 +290,8 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             Error::at_column(lineno + 1, raw[..indent].chars().count() + line[..at].chars().count() + 1, message)
         })?;
     }
-    if let Some(o) = p.open.first() {
-        return Err(Error::at(o.line, format!("`subgraph {}` is never closed with `end`", groups[o.group].title)));
+    if let Some(&(g, line)) = p.open.first() {
+        return Err(Error::at(line, format!("`subgraph {}` is never closed with `end`", groups[g].title)));
     }
     if let Some((id, line)) = group_ids.iter().find(|(id, _)| p.index.contains_key(id)) {
         return Err(Error::at(

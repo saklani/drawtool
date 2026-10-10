@@ -12,7 +12,7 @@
 //! `card`, `row` and `col` place their children.
 
 use crate::paint::{char_width, width, wrap, Fit, Painter, Weight};
-use crate::parse::Style;
+use crate::parse::{strip_comment, Style};
 use crate::Error;
 
 /// Screen width when the header doesn't give one (`width=N`).
@@ -110,7 +110,7 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, Error> {
         .filter(|(_, raw)| !raw.trim().is_empty() && !raw.trim().starts_with("%%"))
         .map(|(i, raw)| {
             let indent = raw.chars().take_while(|c| c.is_whitespace()).map(|c| if c == '\t' { 4 } else { 1 }).sum();
-            Line { no: i + 1, indent, text: raw.trim() }
+            Line { no: i + 1, indent, text: strip_comment(raw.trim()) }
         })
         .collect();
     let mut screens = Vec::new();

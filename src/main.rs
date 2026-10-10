@@ -1,11 +1,12 @@
 use clap::Parser;
 use drawtool::{render_source, Direction, Options};
-use std::io::Read;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const SYNTAX: &str = "\
 Syntax (a subset of Mermaid flowcharts):
-  flowchart LR              # LR = left-to-right (default), TD = top-down
+  flowchart LR              %% LR = left-to-right (default), TD = top-down
   req[HTTP request] --> parse(parse_body)
   parse --> ok{valid?}
   ok -->|yes| save[(db.insert)]
@@ -41,12 +42,12 @@ Wireframes (start with `wireframe [title] [width=N]`, indent children):
 #[command(version, after_help = SYNTAX)]
 struct Args {
     /// Diagram source file (default: stdin)
-    file: Option<String>,
+    file: Option<PathBuf>,
     /// Plain ASCII output
     #[arg(short, long)]
     ascii: bool,
     /// Override layout direction: TD or LR
-    #[arg(short, long, value_parser = direction)]
+    #[arg(short, long)]
     direction: Option<Direction>,
     /// Column budget (default: $COLUMNS, else the terminal's width, else 120; 0 = unlimited).
     /// Too-wide diagrams get their labels wrapped; LR ones are then broken into
@@ -54,19 +55,11 @@ struct Args {
     #[arg(short = 'w', long, value_name = "N")]
     max_width: Option<usize>,
     /// Draw a path thick, e.g. --highlight req,auth,db (in a file: `%% highlight: req, auth, db`)
-    #[arg(long, value_name = "IDS")]
-    highlight: Option<String>,
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    highlight: Vec<String>,
     /// Show how BEFORE became FILE: + added (thick), - removed (dashed), ~ relabelled
     #[arg(long, value_name = "BEFORE")]
-    diff: Option<String>,
-}
-
-fn direction(s: &str) -> Result<Direction, String> {
-    match s.to_uppercase().as_str() {
-        "TD" | "TB" => Ok(Direction::TD),
-        "LR" => Ok(Direction::LR),
-        _ => Err("use TD or LR".to_string()),
-    }
+    diff: Option<PathBuf>,
 }
 
 /// `$COLUMNS`, else the width of whichever of stdout/stderr is a terminal
@@ -84,28 +77,25 @@ fn default_width() -> usize {
 }
 
 /// Read a diagram from `path`, or stdin when `None` or `-`.
-fn read_source(path: Option<&str>) -> Result<String, String> {
-    if let Some(path) = path.filter(|p| *p != "-") {
-        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
-    } else {
-        let mut t = String::new();
-        std::io::stdin().read_to_string(&mut t).map_err(|e| format!("reading stdin: {e}"))?;
-        Ok(t)
+fn read_source(path: Option<&Path>) -> Result<String, String> {
+    if let Some(path) = path.filter(|p| *p != Path::new("-")) {
+        return std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
     }
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Err("no input: pass a diagram file, or pipe one in (see --help)".to_string());
+    }
+    let mut t = String::new();
+    stdin.read_to_string(&mut t).map_err(|e| format!("reading stdin: {e}"))?;
+    Ok(t)
 }
 
 /// Read the input (and the `--diff` file) and render it.
 fn run(args: &Args, max_width: usize) -> Result<drawtool::Fit, Box<dyn std::error::Error>> {
     let text = read_source(args.file.as_deref())?;
     let before = args.diff.as_deref().map(|path| read_source(Some(path))).transpose()?;
-    let highlight = args.highlight.iter().flat_map(|ids| ids.split([',', ' '])).filter(|id| !id.is_empty());
-    let opts = Options {
-        ascii: args.ascii,
-        max_width,
-        direction: args.direction,
-        highlight: highlight.map(String::from).collect(),
-        before,
-    };
+    let highlight = args.highlight.iter().map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect();
+    let opts = Options { ascii: args.ascii, max_width, direction: args.direction, highlight, before };
     Ok(render_source(&text, &opts)?)
 }
 
@@ -120,9 +110,10 @@ fn main() -> ExitCode {
             println!("{}", fit.text);
             ExitCode::SUCCESS
         }
+        // clap exits with 2 for usage errors; failures at run time get 1.
         Err(e) => {
             eprintln!("drawtool: {e}");
-            ExitCode::from(2)
+            ExitCode::FAILURE
         }
     }
 }

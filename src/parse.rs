@@ -11,6 +11,26 @@ pub enum Direction {
     LR,
 }
 
+impl std::str::FromStr for Direction {
+    type Err = String;
+
+    /// `TD`/`TB` or `LR`, in any case.
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_uppercase().as_str() {
+            "TD" | "TB" => Ok(Direction::TD),
+            "LR" => Ok(Direction::LR),
+            _ => Err(format!("unknown direction {s:?} (use TD or LR)")),
+        }
+    }
+}
+
+/// `line` without a trailing `%% comment`. A line that starts with `%%` is
+/// left alone: it is a whole-line comment or a `%% highlight:` directive.
+pub(crate) fn strip_comment(line: &str) -> &str {
+    let at = line.match_indices("%%").map(|(i, _)| i).find(|&i| i > 0 && line[..i].ends_with(char::is_whitespace));
+    at.map_or(line, |i| line[..i].trim_end())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
     Box,
@@ -279,7 +299,7 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
     let mut groups: Vec<Group> = Vec::new();
     let mut highlight: Option<(usize, Vec<String>)> = None;
     for (lineno, raw) in text.lines().enumerate() {
-        let line = raw.trim().trim_end_matches(';').trim();
+        let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
         if let Some(ids) = line.strip_prefix("%%").map(str::trim).and_then(|c| c.strip_prefix("highlight:")) {
             highlight = Some((lineno + 1, crate::marks::split_ids(ids)));
             continue;

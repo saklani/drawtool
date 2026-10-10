@@ -6,7 +6,7 @@
 //! contents, widening gaps until no frame border lands on a lifeline.
 
 use crate::paint::{first_fit, width, wrap, Fit, Painter, Weight};
-use crate::parse::{clean_label, Style};
+use crate::parse::{clean_label, strip_comment, Style};
 use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
@@ -134,7 +134,7 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
     let mut open: Vec<(String, usize)> = Vec::new();
     for (n, raw) in text.lines().enumerate() {
         let lineno = n + 1;
-        let line = raw.trim().trim_end_matches(';').trim();
+        let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
         let opt = |m: Option<regex::Match>| m.map_or("", |m| m.as_str()).trim().to_string();
         if line.is_empty() || line.starts_with("%%") || line.starts_with('#') || p.ignored.is_match(line) {
             continue;

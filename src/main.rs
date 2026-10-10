@@ -1,11 +1,12 @@
 use drawtool::{
-    diff, highlight, is_sequence, marks::split_ids, parse, parse_sequence, render_fit, render_sequence_fit, Direction,
+    diff, highlight, is_sequence, is_wireframe, marks::split_ids, parse, parse_sequence, parse_wireframe, render_fit,
+    render_sequence_fit, render_wireframe_fit, Direction,
 };
 use std::io::Read;
 use std::process::ExitCode;
 
 const HELP: &str = "\
-Render Mermaid-style flowcharts and sequence diagrams in the terminal.
+Render Mermaid-style flowcharts, sequence diagrams and UI wireframes in the terminal.
 
 Usage: drawtool [OPTIONS] [FILE]
 
@@ -52,6 +53,11 @@ Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
   api->>api: validate                   %% self-message
   Note over user,api: text              %% also: Note left of / right of X
   loop every 5m / alt x / else y / opt / par / and ... end
+
+Wireframes (start with `wireframe [title] [width=N]`, indent children):
+  header: ← Back | Title | ?    input: Email = you@x.com   button: Continue
+  card Title:  row:  col:       tabs: *A | B   nav: *Home | Pay
+  - item | $4.50                toggle: Wi-Fi = on   checkbox: x = on   radio: *a | b
 ";
 
 fn fail(msg: &str) -> ExitCode {
@@ -149,6 +155,22 @@ fn main() -> ExitCode {
         Ok(t) => t,
         Err(e) => return fail(&e),
     };
+    if is_wireframe(&text) {
+        if before.is_some() || path.is_some() {
+            return fail("--diff and --highlight only work on flowcharts");
+        }
+        return match parse_wireframe(&text) {
+            Ok(wf) => {
+                let fitted = render_wireframe_fit(&wf, ascii, max_width);
+                if !fitted.fits {
+                    eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
+                }
+                println!("{}", fitted.text);
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        };
+    }
     if is_sequence(&text) {
         if before.is_some() || path.is_some() {
             return fail("--diff and --highlight only work on flowcharts");

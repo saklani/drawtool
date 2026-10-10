@@ -18,7 +18,10 @@ fn examples_match_golden_output() {
         }
         let source = fs::read_to_string(&path).unwrap();
         let render = |ascii: bool| {
-            if drawtool::is_sequence(&source) {
+            if drawtool::is_wireframe(&source) {
+                let wf = drawtool::parse_wireframe(&source).unwrap();
+                drawtool::render_wireframe_fit(&wf, ascii, 120).text
+            } else if drawtool::is_sequence(&source) {
                 let seq = drawtool::parse_sequence(&source).unwrap();
                 drawtool::render_sequence_fit(&seq, ascii, 120).text
             } else {

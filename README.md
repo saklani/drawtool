@@ -69,3 +69,7 @@ ln -s "$PWD/skills/drawtool" ~/.claude/skills/drawtool
 cargo test                    # examples/*.mmd must match tests/golden/
 UPDATE_GOLDEN=1 cargo test    # accept intentional rendering changes
 ```
+
+## License
+
+MIT

@@ -36,7 +36,7 @@ fn same_row(out: &str, a: &str, b: &str) -> bool {
 fn wide_lr_wraps_labels_before_giving_up_on_lr() {
     let src = "flowchart LR\na[a fairly long label here] --> b[another quite long label] --> c[and a third long one]";
     let g = parse(src).unwrap();
-    let unwrapped = drawtool::fit::text_width(&render(&g, None, false));
+    let unwrapped = render(&g, None, false).lines().map(unicode_width::UnicodeWidthStr::width).max().unwrap_or(0);
     let fitted = drawtool::render_fit(&g, drawtool::Direction::LR, false, unwrapped - 10);
     assert!(same_row(&fitted.text, "a fairly", "another"), "still LR:\n{}", fitted.text);
     assert!(fitted.fits && fitted.width < unwrapped, "\n{}", fitted.text);
@@ -100,8 +100,8 @@ fn highlight_marks_nodes_and_thickens_edges() {
     let g = parse("flowchart LR\n%% highlight: a, b\na --> b --> c").unwrap();
     assert_eq!(g.nodes[0].mark, drawtool::Mark::Highlight);
     assert_eq!(g.nodes[2].mark, drawtool::Mark::None);
-    assert_eq!(g.edges[0].style, drawtool::parse::Style::Thick);
-    assert_eq!(g.edges[1].style, drawtool::parse::Style::Solid);
+    assert_eq!(g.edges[0].style, drawtool::Style::Thick);
+    assert_eq!(g.edges[1].style, drawtool::Style::Solid);
     let out = render(&g, None, false);
     assert!(out.contains('┏') && out.contains("━►"), "\n{out}");
 }
@@ -125,7 +125,7 @@ fn diff_marks_added_removed_and_changed() {
     assert_eq!(mark("d"), drawtool::Mark::Added);
     assert_eq!(mark("c"), drawtool::Mark::Removed);
     let styles: Vec<_> = g.edges.iter().map(|e| e.style).collect();
-    use drawtool::parse::Style::*;
+    use drawtool::Style::*;
     assert_eq!(styles, vec![Solid, Thick, Dotted]);
     let out = render(&g, None, false);
     assert!(out.contains("+ D") && out.contains("- C") && out.contains("~ B two"), "\n{out}");

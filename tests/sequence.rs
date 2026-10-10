@@ -1,5 +1,5 @@
-use drawtool::sequence::{Head, Item, NoteSide};
 use drawtool::{is_sequence, parse_sequence, render_sequence, render_sequence_fit};
+use drawtool::{Head, Item, NoteSide};
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {

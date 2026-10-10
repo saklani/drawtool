@@ -1,5 +1,5 @@
-use drawtool::wireframe::{El, DEFAULT_WIDTH, MIN_WIDTH};
 use drawtool::{is_wireframe, parse_wireframe, render_wireframe, render_wireframe_fit};
+use drawtool::{El, WIREFRAME_MIN_WIDTH as MIN_WIDTH, WIREFRAME_WIDTH as DEFAULT_WIDTH};
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {

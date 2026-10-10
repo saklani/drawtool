@@ -1,6 +1,5 @@
 use clap::Parser;
-use drawtool::{diff, highlight, is_sequence, is_wireframe, marks::split_ids, parse, parse_sequence, parse_wireframe};
-use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit, Direction, Fit};
+use drawtool::{render_source, Direction, Options};
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -95,27 +94,19 @@ fn read_source(path: Option<&str>) -> Result<String, String> {
     }
 }
 
-/// Render the input at `width` columns.
-fn run(args: &Args, width: usize) -> Result<Fit, Box<dyn std::error::Error>> {
+/// Read the input (and the `--diff` file) and render it.
+fn run(args: &Args, max_width: usize) -> Result<drawtool::Fit, Box<dyn std::error::Error>> {
     let text = read_source(args.file.as_deref())?;
-    let marks = args.diff.is_some() || args.highlight.is_some();
-    if (is_wireframe(&text) || is_sequence(&text)) && marks {
-        return Err("--diff and --highlight only work on flowcharts".into());
-    }
-    if is_wireframe(&text) {
-        return Ok(render_wireframe_fit(&parse_wireframe(&text)?, args.ascii, width));
-    }
-    if is_sequence(&text) {
-        return Ok(render_sequence_fit(&parse_sequence(&text)?, args.ascii, width));
-    }
-    let mut graph = parse(&text)?;
-    if let Some(before) = &args.diff {
-        graph = diff(&parse(&read_source(Some(before))?).map_err(|e| format!("{before}: {e}"))?, &graph);
-    }
-    if let Some(ids) = &args.highlight {
-        highlight(&mut graph, &split_ids(ids))?;
-    }
-    Ok(render_fit(&graph, args.direction.unwrap_or(graph.direction), args.ascii, width))
+    let before = args.diff.as_deref().map(|path| read_source(Some(path))).transpose()?;
+    let highlight = args.highlight.iter().flat_map(|ids| ids.split([',', ' '])).filter(|id| !id.is_empty());
+    let opts = Options {
+        ascii: args.ascii,
+        max_width,
+        direction: args.direction,
+        highlight: highlight.map(String::from).collect(),
+        before,
+    };
+    Ok(render_source(&text, &opts)?)
 }
 
 fn main() -> ExitCode {

@@ -1,9 +1,11 @@
-use drawtool::{diff, highlight, marks::split_ids, parse, render_fit, Direction};
+use drawtool::{
+    diff, highlight, is_sequence, marks::split_ids, parse, parse_sequence, render_fit, render_sequence_fit, Direction,
+};
 use std::io::Read;
 use std::process::ExitCode;
 
 const HELP: &str = "\
-Render Mermaid-style flowcharts in the terminal.
+Render Mermaid-style flowcharts and sequence diagrams in the terminal.
 
 Usage: drawtool [OPTIONS] [FILE]
 
@@ -36,8 +38,20 @@ Syntax (a subset of Mermaid flowcharts):
   a --> b & c                           %% fan-out (also: a & b --> c)
   x --- y                               %% edge without arrowhead
   n[two\\nlines]                         %% multi-line label (\\n or <br>)
+  subgraph api [API server]             %% dashed group frame
+    mw --> route
+  end
 
 Shapes: [box]  (rounded)  {decision}  ([stadium])  [(database)]  [[sub]]
+
+Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
+  sequenceDiagram
+  participant api as API server         %% or: actor user
+  user->>api: POST /orders              %% ->> solid, -->> dotted reply
+  api-->>user: 201 Created              %% -> / --> no head, -x cross end
+  api->>api: validate                   %% self-message
+  Note over user,api: text              %% also: Note left of / right of X
+  loop every 5m / alt x / else y / opt / par / and ... end
 ";
 
 fn fail(msg: &str) -> ExitCode {
@@ -135,6 +149,22 @@ fn main() -> ExitCode {
         Ok(t) => t,
         Err(e) => return fail(&e),
     };
+    if is_sequence(&text) {
+        if before.is_some() || path.is_some() {
+            return fail("--diff and --highlight only work on flowcharts");
+        }
+        return match parse_sequence(&text) {
+            Ok(seq) => {
+                let fitted = render_sequence_fit(&seq, ascii, max_width);
+                if !fitted.fits {
+                    eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
+                }
+                println!("{}", fitted.text);
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        };
+    }
     let mut graph = match parse(&text) {
         Ok(g) => g,
         Err(e) => return fail(&e),

@@ -1,0 +1,20 @@
+sequenceDiagram
+actor user
+participant api as API
+participant pay as Payments
+participant db as Postgres
+user->>api: POST /checkout
+api->>pay: create session
+pay-->>api: session url
+api->>db: insert order (pending)
+api-->>user: redirect to session url
+pay->>api: webhook: payment.succeeded
+alt signature ok
+api->>db: mark order paid
+else bad signature
+api--xpay: 400
+end
+loop until paid
+user->>api: GET /orders/:id
+api-->>user: status
+end

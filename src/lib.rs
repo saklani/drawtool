@@ -64,7 +64,7 @@ pub fn render_source(text: &str, opts: &Options) -> Result<Fit, Error> {
         return Ok(render_wireframe_fit(&parse_wireframe(text)?, opts.ascii, opts.max_width));
     }
     if is_sequence(text) {
-        return Ok(render_sequence_fit(&parse_sequence(text)?, opts.ascii, opts.max_width));
+        return render_sequence_fit(&parse_sequence(text)?, opts.ascii, opts.max_width);
     }
     let mut graph = parse(text)?;
     if let Some(before) = &opts.before {

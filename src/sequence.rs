@@ -76,6 +76,51 @@ pub struct Sequence {
     pub items: Vec<Item>,
 }
 
+impl Sequence {
+    /// Check what [`parse_sequence`] guarantees, for a sequence built by hand.
+    ///
+    /// # Errors
+    ///
+    /// A message or note naming a participant that doesn't exist, a note whose
+    /// `first` comes after its `last` (or that spans two participants without
+    /// being `Over`), or a `Divider`/`End` outside a frame or a `Start` never
+    /// closed.
+    pub fn validate(&self) -> Result<(), Error> {
+        let n = self.participants.len();
+        let mut open = 0;
+        for (i, item) in self.items.iter().enumerate() {
+            let problem = match item {
+                Item::Message(Message { from, to, .. }) | Item::Note(Note { first: from, last: to, .. })
+                    if *from.max(to) >= n =>
+                {
+                    Some(format!("no participant {} (there are {n})", from.max(to)))
+                }
+                Item::Note(note) if note.first > note.last => Some("a note's `first` is after its `last`".into()),
+                Item::Note(note) if note.side != NoteSide::Over && note.first != note.last => {
+                    Some("only `Over` notes can span two participants".into())
+                }
+                Item::Start { .. } => {
+                    open += 1;
+                    None
+                }
+                Item::Divider { .. } | Item::End if open == 0 => Some("outside a frame".into()),
+                Item::End => {
+                    open -= 1;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(problem) = problem {
+                return Err(Error::new(format!("item {i}: {problem}")));
+            }
+        }
+        if open > 0 {
+            return Err(Error::new("a frame `Start` is never closed with `End`"));
+        }
+        Ok(())
+    }
+}
+
 struct Patterns {
     participant: Regex,
     message: Regex,
@@ -473,8 +518,17 @@ fn draw_message(p: &mut Painter, m: &Message, row: i64, x: &[i64]) {
 }
 
 /// Render a sequence diagram as text.
-#[must_use]
-pub fn render_sequence(seq: &Sequence, ascii: bool) -> String {
+///
+/// # Errors
+///
+/// A hand-built sequence that fails [`Sequence::validate`].
+pub fn render_sequence(seq: &Sequence, ascii: bool) -> Result<String, Error> {
+    seq.validate()?;
+    Ok(draw(seq, ascii))
+}
+
+/// [`render_sequence`] for a sequence known to be valid.
+fn draw(seq: &Sequence, ascii: bool) -> String {
     if seq.participants.is_empty() {
         return String::new();
     }
@@ -526,11 +580,12 @@ pub fn wrap_sequence(seq: &Sequence, max: usize) -> Sequence {
 
 /// Render within `max_width` columns (0 = unlimited), wrapping text at 24,
 /// then 16, then 12 columns if needed.
-#[must_use]
-pub fn render_sequence_fit(seq: &Sequence, ascii: bool, max_width: usize) -> Fit {
+///
+/// # Errors
+///
+/// A hand-built sequence that fails [`Sequence::validate`].
+pub fn render_sequence_fit(seq: &Sequence, ascii: bool, max_width: usize) -> Result<Fit, Error> {
+    seq.validate()?;
     let wrapped = [None, Some(24), Some(16), Some(12)].into_iter();
-    first_fit(
-        max_width,
-        wrapped.map(|w| render_sequence(&w.map_or_else(|| seq.clone(), |w| wrap_sequence(seq, w)), ascii)),
-    )
+    Ok(first_fit(max_width, wrapped.map(|w| draw(&w.map_or_else(|| seq.clone(), |w| wrap_sequence(seq, w)), ascii))))
 }

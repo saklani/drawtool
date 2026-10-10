@@ -5,25 +5,21 @@
 //!   header: ← Back | Add money | ?
 //!   input: Amount ($) = 0.00
 //!   row: [ $20 ] | [ $50 ] | [ $100 ]
-//!   radio: *Card | Bank
 //!   button: Continue
 //! ```
 //!
-//! Each element renders into a block of lines exactly as wide as the space it
-//! is given; containers (`card`, `row`, `col`) compose their children's blocks.
+//! Each element draws itself at a position and width and returns its height;
+//! `card`, `row` and `col` place their children.
 
-use unicode_width::UnicodeWidthChar;
+use crate::paint::{char_width, width, wrap, Painter, Weight};
+use crate::parse::Style;
 
 /// Screen width when the header doesn't give one (`width=N`).
 pub const DEFAULT_WIDTH: usize = 40;
 /// Screens are never squeezed narrower than this.
 pub const MIN_WIDTH: usize = 20;
-/// Columns between screens drawn side by side.
-const SCREEN_GAP: usize = 3;
-/// Columns between the children of a `row`.
-const ROW_GAP: usize = 2;
-/// Right half of a double-width character.
-const WIDE: char = '\0';
+const SCREEN_GAP: i64 = 3;
+const ROW_GAP: i64 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Align {
@@ -64,7 +60,7 @@ pub enum El {
     Toggle(String, bool),
     Checkbox(String, bool),
     Radio(Vec<String>, Option<usize>),
-    /// `- text | right`: the optional right part is right-aligned (amounts, dates).
+    /// `- text | right`: the optional right part is right-aligned.
     Bullet(String, Option<String>),
     Spacer,
 }
@@ -93,8 +89,7 @@ pub fn is_wireframe(text: &str) -> bool {
 }
 
 fn is_screen_header(line: &str) -> bool {
-    let word = line.split_whitespace().next().unwrap_or("");
-    word.eq_ignore_ascii_case("wireframe")
+    line.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("wireframe"))
 }
 
 // ---------------------------------------------------------------------------
@@ -112,27 +107,29 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, String> {
     let lines: Vec<Line> = text
         .lines()
         .enumerate()
-        .filter_map(|(i, raw)| {
-            let t = raw.trim();
-            if t.is_empty() || t.starts_with("%%") {
-                return None;
-            }
+        .filter(|(_, raw)| !raw.trim().is_empty() && !raw.trim().starts_with("%%"))
+        .map(|(i, raw)| {
             let indent = raw.chars().take_while(|c| c.is_whitespace()).map(|c| if c == '\t' { 4 } else { 1 }).sum();
-            Some(Line { no: i + 1, indent, text: t })
+            Line { no: i + 1, indent, text: raw.trim() }
         })
         .collect();
     let mut screens = Vec::new();
     let mut i = 0;
-    while i < lines.len() {
-        let line = &lines[i];
+    while let Some(line) = lines.get(i) {
         if !is_screen_header(line.text) {
             return Err(format!("line {}: expected `wireframe [title]`", line.no));
         }
-        let (title, width) = screen_header(line)?;
+        let (mut title, mut width) = (Vec::new(), DEFAULT_WIDTH);
+        for word in line.text.split_whitespace().skip(1) {
+            match word.strip_prefix("width=") {
+                Some(n) => width = n.parse::<usize>().map_err(|_| format!("line {}: invalid width {n:?}", line.no))?,
+                None => title.push(word),
+            }
+        }
         i += 1;
         let indent = lines.get(i).filter(|l| !is_screen_header(l.text)).map_or(0, |l| l.indent);
         let children = parse_block(&lines, &mut i, indent)?;
-        screens.push(Screen { title, width, children });
+        screens.push(Screen { title: unquote(&title.join(" ")), width: width.max(MIN_WIDTH), children });
     }
     if screens.is_empty() {
         return Err("expected `wireframe [title]`".to_string());
@@ -140,98 +137,44 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, String> {
     Ok(Wireframe { screens })
 }
 
-fn screen_header(line: &Line) -> Result<(String, usize), String> {
-    let mut width = DEFAULT_WIDTH;
-    let mut title = Vec::new();
-    for word in line.text.split_whitespace().skip(1) {
-        match word.strip_prefix("width=") {
-            Some(n) => {
-                width = n.parse().map_err(|_| format!("line {}: invalid width {n:?}", line.no))?;
-                width = width.max(MIN_WIDTH);
-            }
-            None => title.push(word),
-        }
-    }
-    Ok((unquote(&title.join(" ")), width))
-}
-
 /// Elements at exactly `indent`, each with its deeper-indented children.
 fn parse_block(lines: &[Line], i: &mut usize, indent: usize) -> Result<Vec<El>, String> {
     let mut out = Vec::new();
-    while *i < lines.len() && !is_screen_header(lines[*i].text) && lines[*i].indent >= indent {
-        let line = &lines[*i];
+    while let Some(line) = lines.get(*i).filter(|l| !is_screen_header(l.text) && l.indent >= indent) {
         if line.indent > indent {
             return Err(format!("line {}: unexpected indentation (only card, row and col take children)", line.no));
         }
         *i += 1;
-        let child_indent = lines.get(*i).filter(|l| l.indent > indent && !is_screen_header(l.text)).map(|l| l.indent);
-        let mut children = || match child_indent {
-            Some(ci) => parse_block(lines, i, ci),
-            None => Ok(Vec::new()),
-        };
-        let el = match container(line.text) {
-            Some(Container::Card(title)) => El::Card { title, children: children()? },
-            Some(Container::Row) => El::Row(children()?),
-            Some(Container::Col) => El::Col(children()?),
-            None => leaf(line.text),
-        };
-        out.push(el);
+        let deeper = lines.get(*i).filter(|l| l.indent > indent && !is_screen_header(l.text)).map(|l| l.indent);
+        let children = |i: &mut usize| deeper.map_or(Ok(Vec::new()), |d| parse_block(lines, i, d));
+        let head = line.text.strip_suffix(':').map(str::trim);
+        let (word, rest) = head.map_or(("", ""), |h| h.split_once(char::is_whitespace).unwrap_or((h, "")));
+        out.push(match word.to_ascii_lowercase().as_str() {
+            "card" | "box" => El::Card { title: unquote(rest), children: children(i)? },
+            "row" if rest.is_empty() => El::Row(children(i)?),
+            "col" | "column" if rest.is_empty() => El::Col(children(i)?),
+            _ => leaf(line.text),
+        });
     }
     Ok(out)
-}
-
-enum Container {
-    Card(String),
-    Row,
-    Col,
-}
-
-/// `card Title:`, `box:`, `row:`, `col:` with nothing after the colon.
-fn container(text: &str) -> Option<Container> {
-    let head = text.strip_suffix(':')?.trim();
-    let (word, rest) = head.split_once(char::is_whitespace).unwrap_or((head, ""));
-    match word.to_ascii_lowercase().as_str() {
-        "card" | "box" => Some(Container::Card(unquote(rest))),
-        "row" if rest.is_empty() => Some(Container::Row),
-        "col" | "column" if rest.is_empty() => Some(Container::Col),
-        _ => None,
-    }
 }
 
 fn unquote(s: &str) -> String {
     let s = s.trim();
     let quoted = s.len() >= 2 && (s.starts_with('"') && s.ends_with('"') || s.starts_with('\'') && s.ends_with('\''));
-    if quoted {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
-    }
+    if quoted { &s[1..s.len() - 1] } else { s }.to_string()
 }
 
 /// `a | *b | c` → (["a", "b", "c"], Some(1)).
 fn items(rest: &str) -> (Vec<String>, Option<usize>) {
-    let mut active = None;
-    let items = rest
-        .split('|')
-        .map(str::trim)
-        .enumerate()
-        .map(|(i, s)| match s.strip_prefix('*') {
-            Some(s) => {
-                active = Some(i);
-                unquote(s)
-            }
-            None => unquote(s),
-        })
-        .collect();
-    (items, active)
+    let parts: Vec<&str> = rest.split('|').map(str::trim).collect();
+    let active = parts.iter().position(|p| p.starts_with('*'));
+    (parts.iter().map(|p| unquote(p.trim_start_matches('*'))).collect(), active)
 }
 
 /// `label = value`; a bare value is a label.
 fn label_value(rest: &str) -> (String, String) {
-    match rest.split_once('=') {
-        Some((l, v)) => (unquote(l), unquote(v)),
-        None => (unquote(rest), String::new()),
-    }
+    rest.split_once('=').map_or((unquote(rest), String::new()), |(l, v)| (unquote(l), unquote(v)))
 }
 
 fn is_on(value: &str) -> bool {
@@ -251,33 +194,32 @@ fn leaf(text: &str) -> El {
             None => El::Bullet(unquote(item), None),
         };
     }
-    let Some((kw, rest)) = text.split_once(':') else {
-        return El::Text(unquote(text), Align::Auto);
-    };
-    let rest = rest.trim();
-    match kw.trim().to_ascii_lowercase().as_str() {
-        "text" => El::Text(unquote(rest), Align::Auto),
-        "left" => El::Text(unquote(rest), Align::Left),
-        "center" | "centre" => El::Text(unquote(rest), Align::Center),
-        "right" => El::Text(unquote(rest), Align::Right),
+    let Some((kw, rest)) = text.split_once(':') else { return El::Text(unquote(text), Align::Auto) };
+    let (kw, rest) = (kw.trim().to_ascii_lowercase(), rest.trim());
+    let text_as = |a| El::Text(unquote(rest), a);
+    match kw.as_str() {
+        "text" => text_as(Align::Auto),
+        "left" => text_as(Align::Left),
+        "center" | "centre" => text_as(Align::Center),
+        "right" => text_as(Align::Right),
         "header" => El::Header(items(rest).0),
         "input" | "select" => {
             let (label, value) = label_value(rest);
-            El::Input { label, value, select: kw.trim().eq_ignore_ascii_case("select") }
+            El::Input { label, value, select: kw == "select" }
         }
         "button" => El::Button(unquote(rest)),
         "image" => El::Image(unquote(rest)),
         "tabs" | "nav" => {
             let (items, active) = items(rest);
-            El::Tabs { items, active, nav: kw.trim().eq_ignore_ascii_case("nav") }
+            El::Tabs { items, active, nav: kw == "nav" }
         }
-        "toggle" => {
+        "toggle" | "checkbox" => {
             let (label, value) = label_value(rest);
-            El::Toggle(label, is_on(&value))
-        }
-        "checkbox" => {
-            let (label, value) = label_value(rest);
-            El::Checkbox(label, is_on(&value))
+            if kw == "toggle" {
+                El::Toggle(label, is_on(&value))
+            } else {
+                El::Checkbox(label, is_on(&value))
+            }
         }
         "radio" => {
             let (items, active) = items(rest);
@@ -293,179 +235,84 @@ fn leaf(text: &str) -> El {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// One rendered line as display cells, and whether it is a divider that a
-/// surrounding border should join with tees (`├───┤`).
-type Block = Vec<(Vec<char>, bool)>;
-
-struct Glyphs {
-    ascii: bool,
-}
-
-impl Glyphs {
-    /// tl, tr, bl, br, horizontal, vertical, left tee, right tee
-    fn light(&self) -> [char; 8] {
-        if self.ascii {
-            ['+', '+', '+', '+', '-', '|', '+', '+']
-        } else {
-            ['┌', '┐', '└', '┘', '─', '│', '├', '┤']
-        }
+/// Cut to at most `w` columns, ending in `…` if anything was dropped.
+fn truncate(s: &str, w: i64) -> String {
+    if width(s) <= w {
+        return s.to_string();
     }
-
-    fn heavy(&self) -> [char; 6] {
-        if self.ascii {
-            ['#', '#', '#', '#', '=', '#']
-        } else {
-            ['┏', '┓', '┗', '┛', '━', '┃']
+    let mut out = String::new();
+    for ch in s.chars() {
+        if width(&out) + char_width(ch) > w - 1 {
+            break;
         }
+        out.push(ch);
     }
-
-    fn pick(&self, unicode: &'static str, ascii: &'static str) -> &'static str {
-        if self.ascii {
-            ascii
-        } else {
-            unicode
-        }
-    }
-}
-
-fn char_width(c: char) -> usize {
-    c.width().unwrap_or(1).max(1)
-}
-
-fn cells(s: &str) -> Vec<char> {
-    let mut out = Vec::new();
-    for c in s.chars() {
-        out.push(c);
-        if char_width(c) == 2 {
-            out.push(WIDE);
-        }
+    if w > 0 {
+        out.push('…');
     }
     out
 }
 
-/// Cut to at most `w` cells, ending in `…` if anything was dropped.
-fn truncate(mut c: Vec<char>, w: usize) -> Vec<char> {
-    if c.len() <= w {
-        return c;
-    }
-    if w == 0 {
-        return Vec::new();
-    }
-    c.truncate(w - 1);
-    if c.last() == Some(&WIDE) {
-        c.pop();
-        c.pop();
-    } else if c.last().is_some_and(|&ch| char_width(ch) == 2) {
-        c.pop();
-    }
-    c.push('…');
-    c
-}
-
-fn pad(c: Vec<char>, w: usize, align: Align) -> Vec<char> {
-    let c = truncate(c, w);
-    let room = w - c.len();
-    let left = match align {
+/// Draw `s` (cut to `w`) aligned within `x..x+w`.
+fn put(p: &mut Painter, x: i64, y: i64, w: i64, s: &str, align: Align) {
+    let s = truncate(s, w);
+    let room = w - width(&s);
+    let dx = match align {
         Align::Left | Align::Auto => 0,
         Align::Center => room / 2,
         Align::Right => room,
     };
-    let mut out = vec![' '; left];
-    out.extend(c);
-    out.resize(w, ' ');
-    out
+    p.text(x + dx, y, &s);
 }
 
-/// Greedy word wrap into lines of at most `w` cells; long words are split.
-fn wrap(s: &str, w: usize) -> Vec<Vec<char>> {
-    let w = w.max(1);
-    let mut out: Vec<Vec<char>> = Vec::new();
-    let mut cur: Vec<char> = Vec::new();
-    for word in s.split_whitespace() {
-        let mut word = cells(word);
-        if !cur.is_empty() && cur.len() + 1 + word.len() > w {
-            out.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        while cur.len() + word.len() > w {
-            let mut cut = w - cur.len();
-            if cut > 0 && word.get(cut) == Some(&WIDE) {
-                cut -= 1;
-            }
-            if cut == 0 {
-                out.push(std::mem::take(&mut cur));
-                continue;
-            }
-            cur.extend(word.drain(..cut));
-            out.push(std::mem::take(&mut cur));
-        }
-        cur.extend(word);
+/// Wrapped text; returns its height.
+fn para(p: &mut Painter, (x, y): (i64, i64), w: i64, s: &str, align: Align) -> i64 {
+    let lines = wrap(s, w as usize, true);
+    for (k, l) in lines.iter().enumerate() {
+        put(p, x, y + k as i64, w, l, align);
     }
-    if !cur.is_empty() || out.is_empty() {
-        out.push(cur);
-    }
-    out
+    lines.len() as i64
 }
 
-fn line(c: Vec<char>) -> (Vec<char>, bool) {
-    (c, false)
+/// `marker` then `text`, wrapped with continuation lines indented under it.
+fn hanging(p: &mut Painter, (x, y): (i64, i64), w: i64, marker: &str, text: &str) -> i64 {
+    p.text(x, y, marker);
+    para(p, (x + width(marker), y), w - width(marker), text, Align::Left)
 }
 
-fn repeat(ch: char, n: usize) -> Vec<char> {
-    vec![ch; n]
+/// A horizontal line; `edge` extends it into a surrounding frame's border.
+fn rule(p: &mut Painter, x: i64, y: i64, w: i64, edge: i64) {
+    let net = p.net();
+    p.line(&[(x - edge, y), (x + w - 1 + edge, y)], net, Weight::Light, Style::Solid, false);
 }
 
-/// `left` + `fill`×n + `right`.
-fn edge(left: char, fill: char, right: char, w: usize) -> Vec<char> {
-    let mut c = vec![left];
-    c.extend(repeat(fill, w.saturating_sub(2)));
-    c.push(right);
-    c
+fn draw_all(p: &mut Painter, children: &[El], (x, y): (i64, i64), w: i64, edge: i64) -> i64 {
+    children.iter().fold(0, |h, c| h + draw(p, c, (x, y + h), w, Align::Auto, edge))
 }
 
-/// Wrap a block in a border; `title` goes on the top edge.
-fn framed(title: &str, inner: Block, w: usize, g: &Glyphs) -> Block {
-    let [tl, tr, bl, br, h, v, lt, rt] = g.light();
-    let mut top = vec![tl];
+/// A bordered block: children inside, `title` on the top edge.
+fn frame(p: &mut Painter, title: &str, children: &[El], (x, y): (i64, i64), w: i64) -> i64 {
+    let h = draw_all(p, children, (x + 2, y + 1), w - 4, 2) + 2;
+    p.rect((x, y), (w, h), Weight::Light, Style::Solid, false, false);
     if !title.is_empty() {
-        top.push(h);
-        top.push(' ');
-        top.extend(truncate(cells(title), w.saturating_sub(6)));
-        top.push(' ');
+        p.text(x + 2, y, &format!(" {} ", truncate(title, w - 6)));
     }
-    top.resize(w - 1, h);
-    top.push(tr);
-    let mut out = vec![line(top)];
-    for (c, rule) in inner {
-        if rule {
-            out.push(line(edge(lt, h, rt, w)));
-        } else {
-            let mut row = vec![v, ' '];
-            row.extend(c);
-            row.extend([' ', v]);
-            out.push(line(row));
-        }
-    }
-    out.push(line(edge(bl, h, br, w)));
-    out
+    h
 }
 
-fn render_block(children: &[El], w: usize, g: &Glyphs) -> Block {
-    children.iter().flat_map(|c| render(c, w, Align::Auto, g)).collect()
-}
-
-/// Render one element `w` cells wide. `hint` is the alignment a row gives
-/// to `Auto` text.
-fn render(el: &El, w: usize, hint: Align, g: &Glyphs) -> Block {
-    let resolve = |a: Align| if a == Align::Auto { hint } else { a };
+/// Draw one element `w` columns wide at (`x`, `y`) and return its height.
+/// `hint` is the alignment a row gives to `Auto` text; `edge` is how far a
+/// divider must reach to meet the surrounding frame.
+fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge: i64) -> i64 {
+    let pick = |p: &Painter, u: &'static str, a: &'static str| if p.ascii { a } else { u };
     match el {
-        El::Text(s, a) => wrap(s, w).into_iter().map(|c| line(pad(c, w, resolve(*a)))).collect(),
-        El::Spacer => vec![line(repeat(' ', w))],
-        El::Divider => vec![(repeat(g.light()[4], w), true)],
+        El::Text(s, a) => para(p, (x, y), w, s, if *a == Align::Auto { hint } else { *a }),
+        El::Spacer => 1,
+        El::Divider => {
+            rule(p, x, y, w, edge);
+            1
+        }
         El::Header(slots) => {
-            let mut row = repeat(' ', w);
             let n = slots.len().min(3);
             for (i, slot) in slots.iter().take(3).enumerate() {
                 let align = match (i, n) {
@@ -473,192 +320,112 @@ fn render(el: &El, w: usize, hint: Align, g: &Glyphs) -> Block {
                     (1, 2) | (2, _) => Align::Right,
                     _ => Align::Center,
                 };
-                let placed = pad(cells(slot), w, align);
-                for (cell, ch) in row.iter_mut().zip(placed) {
-                    if ch != ' ' {
-                        *cell = ch;
-                    }
-                }
+                put(p, x, y, w, slot, align);
             }
-            vec![line(row), (repeat(g.light()[4], w), true)]
+            rule(p, x, y + 1, w, edge);
+            2
         }
         El::Input { label, value, select } => {
-            let [tl, tr, bl, br, h, v, _, _] = g.light();
-            let mut out: Block = Vec::new();
-            if !label.is_empty() {
-                out.extend(wrap(label, w).into_iter().map(|c| line(pad(c, w, Align::Left))));
-            }
-            let arrow = if *select { 2 } else { 0 };
-            let mut mid = vec![v, ' '];
-            mid.extend(pad(cells(value), w.saturating_sub(4 + arrow), Align::Left));
+            let top = if label.is_empty() { 0 } else { para(p, (x, y), w, label, Align::Left) };
+            p.rect((x, y + top), (w, 3), Weight::Light, Style::Solid, false, false);
+            put(p, x + 2, y + top + 1, w - 4 - if *select { 2 } else { 0 }, value, Align::Left);
             if *select {
-                mid.extend(cells(g.pick(" ▾", " v")));
+                p.symbol(x + w - 3, y + top + 1, '▾');
             }
-            mid.extend([' ', v]);
-            out.push(line(edge(tl, h, tr, w)));
-            out.push(line(mid));
-            out.push(line(edge(bl, h, br, w)));
-            out
+            top + 3
         }
         El::Button(label) => {
-            let [tl, tr, bl, br, h, v] = g.heavy();
-            let mut mid = vec![v];
-            mid.extend(pad(cells(label), w.saturating_sub(2), Align::Center));
-            mid.push(v);
-            vec![line(edge(tl, h, tr, w)), line(mid), line(edge(bl, h, br, w))]
+            p.rect((x, y), (w, 3), Weight::Heavy, Style::Solid, false, false);
+            put(p, x + 1, y + 1, w - 2, label, Align::Center);
+            3
         }
         El::Image(caption) => {
-            let [tl, tr, bl, br, h, v, _, _] = g.light();
-            let fill = if g.ascii { '.' } else { '░' };
-            let inner = w.saturating_sub(2);
-            let mut out = vec![line(edge(tl, h, tr, w))];
-            for r in 0..3 {
-                let mut row = vec![v];
-                let mut body = repeat(fill, inner);
-                if r == 1 && !caption.is_empty() {
-                    let text = truncate(cells(&format!(" {caption} ")), inner);
-                    let at = (inner - text.len()) / 2;
-                    body.splice(at..at + text.len(), text);
-                }
-                row.extend(body);
-                row.push(v);
-                out.push(line(row));
+            p.rect((x, y), (w, 5), Weight::Light, Style::Solid, false, false);
+            for (r, c) in (1..4).flat_map(|r| (1..w - 1).map(move |c| (r, c))) {
+                p.symbol(x + c, y + r, '░');
             }
-            out.push(line(edge(bl, h, br, w)));
-            out
+            if !caption.is_empty() {
+                put(p, x + 1, y + 2, w - 2, &format!(" {caption} "), Align::Center);
+            }
+            5
         }
-        El::Card { title, children } => framed(title, render_block(children, w.saturating_sub(4), g), w, g),
-        El::Col(children) => render_block(children, w, g),
+        El::Card { title, children } => frame(p, title, children, (x, y), w),
+        El::Col(children) => draw_all(p, children, (x, y), w, 0),
         El::Row(children) => {
-            let n = children.len();
-            if n == 0 {
-                return Vec::new();
+            let n = children.len() as i64;
+            let room = (w - ROW_GAP * (n - 1)).max(0);
+            let (base, extra) = (room / n.max(1), room % n.max(1));
+            let mut cx = x;
+            let mut h = 0;
+            for (i, c) in children.iter().enumerate() {
+                let i = i as i64;
+                let cw = base + i64::from(i < extra);
+                let hint = match i {
+                    _ if n == 1 || i == 0 => Align::Left,
+                    _ if i == n - 1 => Align::Right,
+                    _ => Align::Center,
+                };
+                h = h.max(draw(p, c, (cx, y), cw, hint, 0));
+                cx += cw + ROW_GAP;
             }
-            let gaps = ROW_GAP * (n - 1);
-            let base = w.saturating_sub(gaps) / n;
-            let extra = w.saturating_sub(gaps) - base * n;
-            let cols: Vec<Block> = children
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let cw = base + usize::from(i < extra);
-                    let hint = match (i, n) {
-                        (_, 1) | (0, _) => Align::Left,
-                        (i, n) if i == n - 1 => Align::Right,
-                        _ => Align::Center,
-                    };
-                    render(c, cw, hint, g)
-                })
-                .collect();
-            let height = cols.iter().map(Vec::len).max().unwrap_or(0);
-            (0..height)
-                .map(|r| {
-                    let mut row = Vec::new();
-                    for (i, col) in cols.iter().enumerate() {
-                        let cw = base + usize::from(i < extra);
-                        if i > 0 {
-                            row.extend(repeat(' ', ROW_GAP));
-                        }
-                        row.extend(col.get(r).map_or_else(|| repeat(' ', cw), |l| l.0.clone()));
-                    }
-                    row.resize(w, ' ');
-                    line(row)
-                })
-                .collect()
+            h
         }
         El::Tabs { items, active, nav } => {
-            let n = items.len().max(1);
-            let base = w / n;
-            let mut names = Vec::new();
-            let mut under = repeat(if *nav { ' ' } else { g.light()[4] }, w);
-            let mark = g.heavy()[4];
-            let mut x = 0;
-            for (i, item) in items.iter().enumerate() {
-                let cw = if i == n - 1 { w - x } else { base };
-                let cell = pad(cells(item), cw, Align::Center);
-                if Some(i) == *active {
-                    let start = cell.iter().position(|&c| c != ' ').unwrap_or(0);
-                    let end = cell.iter().rposition(|&c| c != ' ').map_or(0, |e| e + 1);
-                    for u in &mut under[x + start..x + end] {
-                        *u = mark;
-                    }
-                }
-                names.extend(cell);
-                x += cw;
-            }
-            let mut out = Vec::new();
+            let n = items.len().max(1) as i64;
+            let y = y + i64::from(*nav);
             if *nav {
-                out.push((repeat(g.light()[4], w), true));
+                rule(p, x, y - 1, w, edge);
+            } else {
+                rule(p, x, y + 1, w, 0);
             }
-            out.push(line(names));
-            if !*nav || active.is_some() {
-                out.push(line(under));
+            let mut cx = x;
+            for (i, item) in items.iter().enumerate() {
+                let cw = if i as i64 == n - 1 { x + w - cx } else { w / n };
+                put(p, cx, y, cw, item, Align::Center);
+                if Some(i) == *active {
+                    let tw = width(&truncate(item, cw));
+                    let net = p.net();
+                    let start = cx + (cw - tw) / 2;
+                    p.line(&[(start, y + 1), (start + tw - 1, y + 1)], net, Weight::Heavy, Style::Solid, false);
+                }
+                cx += cw;
             }
-            out
+            1 + i64::from(*nav) + i64::from(!*nav || active.is_some())
         }
         El::Toggle(label, on) => {
-            let switch = match (on, g.ascii) {
+            let switch = match (on, p.ascii) {
                 (true, false) => "(  ●)",
                 (false, false) => "(○  )",
                 (true, true) => "[ ON]",
                 (false, true) => "[OFF]",
             };
-            let sw = cells(switch);
-            let mut row = pad(cells(label), w.saturating_sub(sw.len() + 1), Align::Left);
-            row.push(' ');
-            row.extend(sw);
-            vec![line(pad(row, w, Align::Left))]
+            put(p, x, y, w - 6, label, Align::Left);
+            p.text(x + w - 5, y, switch);
+            1
         }
-        El::Checkbox(label, on) => {
-            let box_ = if *on { "[x] " } else { "[ ] " };
-            hanging(box_, label, w)
-        }
+        El::Checkbox(label, on) => hanging(p, (x, y), w, if *on { "[x] " } else { "[ ] " }, label),
         El::Radio(options, active) => {
-            let dot = g.pick("•", "*");
+            let dot = pick(p, "•", "*");
             let options: Vec<String> = options
                 .iter()
                 .enumerate()
-                .map(|(i, o)| if Some(i) == *active { format!("({dot}) {o}") } else { format!("( ) {o}") })
+                .map(|(i, o)| format!("({}) {o}", if Some(i) == *active { dot } else { " " }))
                 .collect();
-            let one_line = cells(&options.join("   "));
-            if one_line.len() <= w {
-                vec![line(pad(one_line, w, Align::Left))]
-            } else {
-                options.iter().flat_map(|o| wrap(o, w)).map(|c| line(pad(c, w, Align::Left))).collect()
+            let one = options.join("   ");
+            if width(&one) <= w {
+                p.text(x, y, &one);
+                return 1;
             }
+            options.iter().fold(0, |h, o| h + para(p, (x, y + h), w, o, Align::Left))
         }
         El::Bullet(text, right) => {
-            let right = right.as_deref().map(cells).unwrap_or_default();
-            let room = if right.is_empty() { w } else { w.saturating_sub(right.len() + 1) };
-            let mut out = hanging(g.pick("• ", "* "), text, room);
-            for (row, _) in out.iter_mut() {
-                row.resize(w, ' ');
-            }
-            if let Some((first, _)) = out.first_mut() {
-                let at = w - right.len().min(w);
-                first.splice(at.., truncate(right, w));
-            }
-            out
+            let right = right.as_deref().unwrap_or("");
+            let room = if right.is_empty() { w } else { w - width(right) - 1 };
+            let h = hanging(p, (x, y), room, pick(p, "• ", "* "), text);
+            put(p, x, y, w, right, Align::Right);
+            h
         }
     }
-}
-
-/// `marker` then `text`, wrapped with continuation lines indented under it.
-fn hanging(marker: &str, text: &str, w: usize) -> Block {
-    let m = cells(marker);
-    wrap(text, w.saturating_sub(m.len()))
-        .into_iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let mut row = if i == 0 { m.clone() } else { repeat(' ', m.len()) };
-            row.extend(c);
-            line(pad(row, w, Align::Left))
-        })
-        .collect()
-}
-
-fn to_string(c: &[char]) -> String {
-    c.iter().filter(|&&ch| ch != WIDE).collect::<String>().trim_end().to_string()
 }
 
 /// Render every screen at its own width.
@@ -670,46 +437,17 @@ pub fn render_wireframe(wf: &Wireframe, ascii: bool) -> String {
 /// next one would pass `max_width` (0 = unlimited). A screen wider than the
 /// budget is narrowed, down to `MIN_WIDTH`.
 pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> WireFitted {
-    let g = Glyphs { ascii };
-    let screens: Vec<Block> = wf
-        .screens
-        .iter()
-        .map(|s| {
-            let w = if max_width == 0 { s.width } else { s.width.min(max_width).max(MIN_WIDTH) };
-            framed(&s.title, render_block(&s.children, w - 4, &g), w, &g)
-        })
-        .collect();
-    let mut rows: Vec<Vec<&Block>> = Vec::new();
-    let mut used = 0;
-    for s in &screens {
-        let w = s[0].0.len();
-        if rows.is_empty() || (max_width > 0 && used + SCREEN_GAP + w > max_width) {
-            rows.push(Vec::new());
-            used = 0;
-        } else {
-            used += SCREEN_GAP;
+    let mut p = Painter::new(ascii);
+    let (mut x, mut y, mut row_h) = (0i64, 0i64, 0i64);
+    for s in &wf.screens {
+        let w = if max_width == 0 { s.width } else { s.width.min(max_width).max(MIN_WIDTH) } as i64;
+        if x > 0 && max_width > 0 && x + w > max_width as i64 {
+            (x, y, row_h) = (0, y + row_h + 1, 0);
         }
-        rows.last_mut().unwrap().push(s);
-        used += w;
+        row_h = row_h.max(frame(&mut p, &s.title, &s.children, (x, y), w));
+        x += w + SCREEN_GAP;
     }
-    let mut lines: Vec<String> = Vec::new();
-    for (ri, row) in rows.iter().enumerate() {
-        if ri > 0 {
-            lines.push(String::new());
-        }
-        let height = row.iter().map(|s| s.len()).max().unwrap_or(0);
-        for r in 0..height {
-            let mut out: Vec<char> = Vec::new();
-            for (i, s) in row.iter().enumerate() {
-                if i > 0 {
-                    out.extend(repeat(' ', SCREEN_GAP));
-                }
-                let w = s[0].0.len();
-                out.extend(s.get(r).map_or_else(|| repeat(' ', w), |l| l.0.clone()));
-            }
-            lines.push(to_string(&out));
-        }
-    }
-    let width = lines.iter().map(|l| cells(l).len()).max().unwrap_or(0);
-    WireFitted { text: lines.join("\n"), width, fits: max_width == 0 || width <= max_width }
+    let text = p.finish();
+    let width = text.lines().map(width).max().unwrap_or(0) as usize;
+    WireFitted { text, width, fits: max_width == 0 || width <= max_width }
 }

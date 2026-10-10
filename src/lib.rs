@@ -3,6 +3,7 @@
 pub mod fit;
 pub mod layout;
 pub mod marks;
+pub mod paint;
 pub mod parse;
 pub mod sequence;
 pub mod wireframe;

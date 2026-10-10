@@ -237,8 +237,11 @@ pub fn node_layers(graph: &Graph) -> Vec<usize> {
     layer_graph(graph, false).0.iter().take(graph.nodes.len()).map(|n| n.layer).collect()
 }
 
-struct Layout<'g> {
-    graph: &'g Graph,
+#[derive(Default)]
+struct Layout {
+    /// Number of real (declared) nodes, and the subgraph titles.
+    real: usize,
+    titles: Vec<String>,
     td: bool,
     gap: i64,
     nodes: Vec<Node>,
@@ -264,22 +267,9 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
     }
     let td = direction.unwrap_or(graph.direction) == Direction::TD;
     let (nodes, edges, chains) = layer_graph(graph, ascii);
-    let mut l = Layout {
-        graph,
-        td,
-        gap: if td { 3 } else { 1 },
-        nodes,
-        edges,
-        layers: vec![],
-        lanes: vec![],
-        span: HashMap::new(),
-        segs: vec![],
-        groups: HashMap::new(),
-        port: HashMap::new(),
-        bstart: vec![],
-        cstart: vec![],
-        lead: vec![],
-    };
+    let titles = graph.groups.iter().map(|g| g.title.clone()).collect();
+    let mut l =
+        Layout { real: graph.nodes.len(), titles, td, gap: if td { 3 } else { 1 }, nodes, edges, ..Default::default() };
     l.dummies(&chains);
     l.order();
     l.segments();
@@ -291,7 +281,7 @@ pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Strin
     l.paint(ascii)
 }
 
-impl Layout<'_> {
+impl Layout {
     fn lane_rank(&self, v: usize) -> usize {
         self.lanes.iter().position(|&l| l == self.nodes[v].lane).unwrap_or(0)
     }
@@ -348,7 +338,7 @@ impl Layout<'_> {
     /// crossings). Every subgraph is a lane: a strip across the flow only its
     /// members occupy, so its frame can never enclose a stranger.
     fn order(&mut self) {
-        let real = self.graph.nodes.len();
+        let real = self.real;
         for v in 0..real {
             let (lane, layer) = (self.nodes[v].lane, self.nodes[v].layer);
             let e = self.span.entry(lane).or_insert((layer, layer));
@@ -719,7 +709,7 @@ impl Layout<'_> {
             let ((xa, ya), (xb, yb)) = (self.phys(l0, c0 - FRAME), self.phys(l1, c1 + FRAME));
             let (x0, x1, y0, y1) = (xa.min(xb), xa.max(xb), ya.min(yb), ya.max(yb));
             p.rect((x0, y0), (x1 - x0 + 1, y1 - y0 + 1), Weight::Light, Style::Dotted, false, true);
-            let title = format!(" {} ", self.graph.groups[lane - 1].title);
+            let title = format!(" {} ", self.titles[lane - 1]);
             let tw = width(&title);
             let free = |x: i64| (x..x + tw).all(|x| p.is_free((x, y0)));
             // If no gap is wide enough, the title wins over the lines it covers.

@@ -1,0 +1,5 @@
+flowchart LR
+a[load config] --> b[connect] --> c{ok?}
+c -->|retry| b
+c -->|yes| d[serve]
+a --> d

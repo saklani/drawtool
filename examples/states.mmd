@@ -1,0 +1,7 @@
+flowchart TD
+idle --> connecting -->|ok| ready
+connecting -->|timeout| backoff -->|wait| connecting
+ready -->|drop| connecting
+ready -->|close| closed
+idle --> closed
+backoff -. give up .-> closed

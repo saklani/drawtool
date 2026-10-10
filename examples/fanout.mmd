@@ -1,0 +1,9 @@
+flowchart TD
+main --> parse_args & load_env
+parse_args --> build_cfg
+load_env --> build_cfg
+build_cfg --> run
+main --> log[setup_logging]
+log -.-> run
+run --> a[step 1] & b[step 2] & c[step 3]
+a & b & c --> done((done))

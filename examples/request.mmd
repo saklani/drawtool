@@ -1,0 +1,8 @@
+flowchart TD
+req[HTTP request] --> parse(parse_body)
+parse --> ok{valid?}
+ok -->|yes| save[(db.insert)]
+ok -- no --> err[400 Bad Request]
+save -.-> cache[cache.invalidate]
+save ==> resp[201 Created]
+err --> resp

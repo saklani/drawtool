@@ -32,6 +32,7 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 | `a --> b & c`, `a & b --> c` | fan-out / fan-in |
 | `a[line one\nline two]` | multi-line label |
 | `%% comment` | comment |
+| `sequenceDiagram` then `a->>b: msg`, `b-->>a: reply` | sequence diagram (see below) |
 
 Define a node's label once (`p(parse_body)`), then refer to it by id (`p`). Cycles and self-loops work.
 Flags: `--ascii` for plain ASCII, `-d TD` to override direction, `-w N` column budget
@@ -41,6 +42,12 @@ connectors (①). drawtool never switches to TD by itself; if it still can't
 fit, it prints a `note:` on stderr. Never paste that note into the reply.
 If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --path /Users/shauryasaklani/Development/drawtool`.
+
+**Sequence diagrams:** when the question is about call order between components (request → API
+→ vendor → webhook → DB → client polls), start with `sequenceDiagram` instead of a flowchart.
+Messages: `a->>b: text` (call), `b-->>a: text` (reply), `a->>a: text` (self), `a--xb: 400`
+(failure). Also `participant db as Postgres`, `actor user`, `Note over a,b: text`, and frames
+`loop` / `alt` + `else` / `opt` / `par` + `and`, each closed by `end`.
 
 ## Drawing a good diagram
 

@@ -68,6 +68,77 @@ When several edges cross the same break, the rows are joined by numbered connect
 (①, ②, ...) instead of lines. If a diagram still can't fit, drawtool prints a `note:` on
 stderr. Top-down is a mode you choose (`flowchart TD` or `-d TD`), never a fallback.
 
+## Sequence diagrams
+
+Start the input with `sequenceDiagram` to draw who-calls-whom over time: participants across
+the top, lifelines down, one message per row. Columns widen to fit each label, and `loop`,
+`alt`/`else`, `opt` and `par`/`and` blocks become frames.
+
+```
+╭──────╮                   ┌─────┐                     ┌──────────┐  ┌──────────┐
+│ user │                   │ API │                     │ Payments │  │ Postgres │
+╰──┬───╯                   └──┬──┘                     └────┬─────┘  └────┬─────┘
+   │                          │                             │             │
+   │ POST /checkout           │                             │             │
+   ├─────────────────────────►│                             │             │
+   │                          │ create session              │             │
+   │                          ├────────────────────────────►│             │
+   │                          │ session url                 │             │
+   │                          │◄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┤             │
+   │                          │ insert order (pending)      │             │
+   │                          ├─────────────────────────────│────────────►│
+   │ redirect to session url  │                             │             │
+   │◄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┤                             │             │
+   │                          │ webhook: payment.succeeded  │             │
+   │                          │◄────────────────────────────┤             │
+   │                        ┌ alt signature ok ┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┐
+   │                        ┆ │ mark order paid             │             │ ┆
+   │                        ┆ ├─────────────────────────────│────────────►│ ┆
+   │                        ├ else bad signature ┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┤
+   │                        ┆ │ 400                         │             │ ┆
+   │                        ┆ ├┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄x│             │ ┆
+   │                        └┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┘
+ ┌ loop until paid ┄┄┄┄┄┄┄┄┄┄┄│┄┐                           │             │
+ ┆ │ GET /orders/:id          │ ┆                           │             │
+ ┆ ├─────────────────────────►│ ┆                           │             │
+ ┆ │ status                   │ ┆                           │             │
+ ┆ │◄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┤ ┆                           │             │
+ └┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│┄┘                           │             │
+   │                          │                             │             │
+╭──┴───╮                   ┌──┴──┐                     ┌────┴─────┐  ┌────┴─────┐
+│ user │                   │ API │                     │ Payments │  │ Postgres │
+╰──────╯                   └─────┘                     └──────────┘  └──────────┘
+```
+
+```
+sequenceDiagram
+actor user
+participant api as API
+participant pay as Payments
+participant db as Postgres
+user->>api: POST /checkout
+api->>pay: create session
+pay-->>api: session url
+api->>db: insert order (pending)
+api-->>user: redirect to session url
+pay->>api: webhook: payment.succeeded
+alt signature ok
+api->>db: mark order paid
+else bad signature
+api--xpay: 400
+end
+loop until paid
+user->>api: GET /orders/:id
+api-->>user: status
+end
+```
+
+Supported: `participant X as Name`, `actor X`; arrows `->>` (solid), `-->>` (dotted reply),
+`->`/`-->` (no head), `-x`/`--x` (failed), `-)` (async); self-messages; `Note left of X`,
+`Note right of X`, `Note over X,Y`; nested `loop`/`alt`/`else`/`opt`/`par`/`and` ... `end`.
+`autonumber`, `activate`/`deactivate` and `title` are ignored. Long labels are word-wrapped to
+fit the column budget.
+
 ## Syntax
 
 A subset of Mermaid flowchart syntax:

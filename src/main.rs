@@ -1,9 +1,9 @@
-use drawtool::{parse, render_fit, Direction};
+use drawtool::{is_sequence, parse, parse_sequence, render_fit, render_sequence_fit, Direction};
 use std::io::Read;
 use std::process::ExitCode;
 
 const HELP: &str = "\
-Render Mermaid-style flowcharts in the terminal.
+Render Mermaid-style flowcharts and sequence diagrams in the terminal.
 
 Usage: drawtool [OPTIONS] [FILE]
 
@@ -34,6 +34,15 @@ Syntax (a subset of Mermaid flowcharts):
   n[two\\nlines]                         %% multi-line label (\\n or <br>)
 
 Shapes: [box]  (rounded)  {decision}  ([stadium])  [(database)]  [[sub]]
+
+Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
+  sequenceDiagram
+  participant api as API server         %% or: actor user
+  user->>api: POST /orders              %% ->> solid, -->> dotted reply
+  api-->>user: 201 Created              %% -> / --> no head, -x cross end
+  api->>api: validate                   %% self-message
+  Note over user,api: text              %% also: Note left of / right of X
+  loop every 5m / alt x / else y / opt / par / and ... end
 ";
 
 fn fail(msg: &str) -> ExitCode {
@@ -114,6 +123,19 @@ fn main() -> ExitCode {
             t
         }
     };
+    if is_sequence(&text) {
+        return match parse_sequence(&text) {
+            Ok(seq) => {
+                let fitted = render_sequence_fit(&seq, ascii, max_width);
+                if !fitted.fits {
+                    eprintln!("drawtool: note: {} columns wide, over the {max_width}-column budget", fitted.width);
+                }
+                println!("{}", fitted.text);
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        };
+    }
     match parse(&text) {
         Ok(graph) => {
             let wanted = direction.unwrap_or(graph.direction);

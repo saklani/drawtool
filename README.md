@@ -33,12 +33,19 @@ cargo install --path .
 ## Usage
 
 ```sh
-drawtool diagram.mmd          # or pipe the source on stdin
-drawtool --ascii diagram.mmd  # plain ASCII
-drawtool -d TD diagram.mmd    # override direction (LR or TD)
-drawtool -w 100 diagram.mmd   # column budget (default: terminal width, 0 = unlimited)
-drawtool --highlight a,b,c diagram.mmd   # draw one path thick
-drawtool --diff before.mmd after.mmd     # show what changed
+drawtool <<'EOF'
+flowchart LR
+a[build] --> b[ship]
+EOF
+```
+
+drawtool is made for agents: the diagram always comes on stdin, as a quoted heredoc so
+labels with `'`, `"`, `$` or backticks pass through untouched. Flags:
+
+```sh
+-d TD            # override direction (LR or TD)
+-w 100           # column budget (default: terminal width, 0 = unlimited)
+--highlight a,b,c   # draw one path thick
 ```
 
 ## Long diagrams
@@ -210,26 +217,6 @@ branch a request takes:
              ┗━━━━━━━━━━━┛       │ ┌──────────────────┐
                                  └►│ 401 Unauthorized │
                                    └──────────────────┘
-```
-
-## Before and after
-
-`drawtool --diff before.mmd after.mmd` draws one diagram of how `before` became `after`,
-matching nodes by id: `+` added (heavy), `-` removed (dashed/dotted), `~` relabelled.
-
-```
-                                                                      ╒══════════╕
-                                                                      │          │
-                                                                   ┌━►│ postgres ├─┐ ┌────────┐
-                                    ┏━━━━━━━━━━━┓          ┌━+ no━━┘┌►│          │ │ │        │
-                                  ┌►┃ + cached? ┠━━━━━━━━━━┤        ┆ ╘══════════╛ └►│ 200 OK │
-             ╔═══════════╗        ┃ ┗━━━━━━━━━━━┛          └━+ yes━┐┆              ┌►│        │
-             ║           ╟━━+ yes━┘                                └╂━━━━━━━━━━━━━━┘ └────────┘
-┌─────────┐  ║           ║          ┌────────────────────┐          ┆
-│ request ├─►║ token ok? ╟──no─────►│ ~ 401 Unauthorized │          ┆
-└─────────┘  ║           ║          └────────────────────┘          ┆
-             ║           ╟┄┄- yes┄┐                                 ┆
-             ╚═══════════╝        └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ## Stacking boxes

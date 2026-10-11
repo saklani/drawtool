@@ -1,10 +1,11 @@
 use clap::Parser;
 use drawtool::{render_source, Direction, Options};
 use std::io::{IsTerminal, Read};
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const SYNTAX: &str = "\
+The diagram comes on stdin, usually a quoted heredoc: drawtool <<'EOF' ... EOF
+
 Syntax (a subset of Mermaid flowcharts):
   flowchart LR              %% LR = left-to-right (default), TD = top-down
   req[HTTP request] --> parse(parse_body)
@@ -51,11 +52,6 @@ Wireframes (start with `wireframe [title] [width=N]`, indent children):
 #[derive(Parser)]
 #[command(version, after_help = SYNTAX)]
 struct Args {
-    /// Diagram source file (default: stdin)
-    file: Option<PathBuf>,
-    /// Plain ASCII output
-    #[arg(short, long)]
-    ascii: bool,
     /// Override layout direction: TD or LR
     #[arg(short, long)]
     direction: Option<Direction>,
@@ -67,9 +63,6 @@ struct Args {
     /// Draw a path thick, e.g. --highlight req,auth,db (in a file: `%% highlight: req, auth, db`)
     #[arg(long, value_name = "IDS", value_delimiter = ',')]
     highlight: Vec<String>,
-    /// Show how BEFORE became FILE: + added (thick), - removed (dashed), ~ relabelled
-    #[arg(long, value_name = "BEFORE")]
-    diff: Option<PathBuf>,
 }
 
 /// `$COLUMNS`, else the width of whichever of stdout/stderr is a terminal
@@ -86,26 +79,25 @@ fn default_width() -> usize {
         .unwrap_or(120)
 }
 
-/// Read a diagram from `path`, or stdin when `None` or `-`.
-fn read_source(path: Option<&Path>) -> Result<String, String> {
-    if let Some(path) = path.filter(|p| *p != Path::new("-")) {
-        return std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
-    }
+/// The diagram source, from stdin (a heredoc).
+fn read_stdin() -> Result<String, String> {
     let mut stdin = std::io::stdin();
     if stdin.is_terminal() {
-        return Err("no input: pass a diagram file, or pipe one in (see --help)".to_string());
+        return Err("no input: pipe the diagram in on stdin (see --help)".to_string());
     }
     let mut t = String::new();
     stdin.read_to_string(&mut t).map_err(|e| format!("reading stdin: {e}"))?;
+    if t.trim().is_empty() {
+        return Err("no diagram on stdin".to_string());
+    }
     Ok(t)
 }
 
-/// Read the input (and the `--diff` file) and render it.
+/// Read the diagram from stdin and render it.
 fn run(args: &Args, max_width: usize) -> Result<drawtool::Fit, Box<dyn std::error::Error>> {
-    let text = read_source(args.file.as_deref())?;
-    let before = args.diff.as_deref().map(|path| read_source(Some(path))).transpose()?;
+    let text = read_stdin()?;
     let highlight = args.highlight.iter().map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect();
-    let opts = Options { ascii: args.ascii, max_width, direction: args.direction, highlight, before };
+    let opts = Options { max_width, direction: args.direction, highlight };
     Ok(render_source(&text, &opts)?)
 }
 

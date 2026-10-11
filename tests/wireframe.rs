@@ -3,7 +3,7 @@ use drawtool::{El, WIREFRAME_MIN_WIDTH as MIN_WIDTH, WIREFRAME_WIDTH as DEFAULT_
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {
-    render_wireframe(&parse_wireframe(src).unwrap(), false)
+    render_wireframe(&parse_wireframe(src).unwrap())
 }
 
 /// Every line of a single screen is exactly as wide as the screen.
@@ -92,13 +92,6 @@ fn every_element_renders_rectangular() {
 }
 
 #[test]
-fn ascii_mode_uses_only_ascii() {
-    let wf = parse_wireframe("wireframe A\n  header: a | b\n  button: Go\n  image\n  select: x = y\n  toggle: t = on\n  - item\n  radio: *a | b\n  nav: *x | y").unwrap();
-    let out = render_wireframe(&wf, true);
-    assert!(out.is_ascii(), "\n{out}");
-}
-
-#[test]
 fn wide_characters_stay_aligned() {
     let out = draw("wireframe 数据\n  header: ☰ | 你好 | 🔔\n  - 咖啡 | ¥30\n  button: 继续");
     assert_rectangular(&out, DEFAULT_WIDTH);
@@ -107,11 +100,11 @@ fn wide_characters_stay_aligned() {
 #[test]
 fn screens_sit_side_by_side_and_wrap_to_the_budget() {
     let wf = parse_wireframe("wireframe A\n  text: a\nwireframe B\n  text: b").unwrap();
-    let wide = render_wireframe_fit(&wf, false, 120);
+    let wide = render_wireframe_fit(&wf, 120);
     assert!(wide.fits && wide.text.lines().next().unwrap().contains("┌─ B"), "\n{}", wide.text);
-    let narrow = render_wireframe_fit(&wf, false, 50);
+    let narrow = render_wireframe_fit(&wf, 50);
     assert!(narrow.fits && narrow.text.lines().filter(|l| l.contains("┌─")).count() == 2, "\n{}", narrow.text);
-    let tiny = render_wireframe_fit(&wf, false, 10);
+    let tiny = render_wireframe_fit(&wf, 10);
     assert!(!tiny.fits && tiny.width == MIN_WIDTH, "\n{}", tiny.text);
 }
 

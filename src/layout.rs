@@ -303,12 +303,12 @@ pub(crate) struct Scene {
 
 /// Render a parsed graph as text. `direction` overrides the graph's own.
 #[must_use]
-pub fn render(graph: &Graph, direction: Option<Direction>, ascii: bool) -> String {
-    scene(graph, direction, ascii).map_or_else(String::new, |s| s.painter.finish())
+pub fn render(graph: &Graph, direction: Option<Direction>) -> String {
+    scene(graph, direction).map_or_else(String::new, |s| s.painter.finish())
 }
 
 /// Lay out and paint `graph`; `None` if it has no nodes.
-pub(crate) fn scene(graph: &Graph, direction: Option<Direction>, ascii: bool) -> Option<Scene> {
+pub(crate) fn scene(graph: &Graph, direction: Option<Direction>) -> Option<Scene> {
     if graph.g.node_count() == 0 {
         return None;
     }
@@ -318,7 +318,7 @@ pub(crate) fn scene(graph: &Graph, direction: Option<Direction>, ascii: bool) ->
     l.place();
     l.ports();
     l.tracks();
-    Some(l.paint(ascii))
+    Some(l.paint())
 }
 
 impl Layout {
@@ -881,16 +881,15 @@ impl Layout {
         (self.phys(l0, lo), if self.td { (w, bx.lsize) } else { (bx.lsize, w) })
     }
 
-    fn paint(mut self, ascii: bool) -> Scene {
+    fn paint(mut self) -> Scene {
         self.coordinates();
-        let mut p = Painter::new(ascii);
+        let mut p = Painter::new();
         p.mark_crossings = true;
         for b in 0..self.boxes.len() {
             let ((x, y), (w, h)) = self.box_rect(b);
             let bx = &self.boxes[b];
             let (weight, style, corners) = match (bx.mark, bx.shape) {
-                (Mark::Highlight | Mark::Added, _) => (Weight::Heavy, Style::Solid, Corners::Square),
-                (Mark::Removed, _) => (Weight::Light, Style::Dotted, Corners::Square),
+                (Mark::Highlight, _) => (Weight::Heavy, Style::Solid, Corners::Square),
                 (_, Shape::Decision) => (Weight::Double, Style::Solid, Corners::Square),
                 (_, Shape::Round) => (Weight::Light, Style::Solid, Corners::Round),
                 _ => (Weight::Light, Style::Solid, Corners::Square),

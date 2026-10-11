@@ -311,7 +311,6 @@ fn frame(p: &mut Painter, title: &str, children: &[El], (x, y): (i64, i64), w: i
 /// `hint` is the alignment a row gives to `Auto` text; `edge` is how far a
 /// divider must reach to meet the surrounding frame.
 fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge: i64) -> i64 {
-    let pick = |p: &Painter, u: &'static str, a: &'static str| if p.ascii { a } else { u };
     match el {
         El::Text(s, a) => para(p, (x, y), w, s, if *a == Align::Auto { hint } else { *a }),
         El::Spacer => 1,
@@ -398,19 +397,14 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
             1 + i64::from(*nav) + i64::from(!*nav || active.is_some())
         }
         El::Toggle(label, on) => {
-            let switch = match (on, p.ascii) {
-                (true, false) => "(  ●)",
-                (false, false) => "(○  )",
-                (true, true) => "[ ON]",
-                (false, true) => "[OFF]",
-            };
+            let switch = if *on { "(  ●)" } else { "(○  )" };
             put(p, x, y, w - 6, label, Align::Left);
             put(p, x, y, w, switch, Align::Right);
             1
         }
         El::Checkbox(label, on) => hanging(p, (x, y), w, if *on { "[x] " } else { "[ ] " }, label),
         El::Radio(options, active) => {
-            let dot = pick(p, "•", "*");
+            let dot = "•";
             let marker = |i: usize| format!("({}) ", if Some(i) == *active { dot } else { " " });
             let one: Vec<String> = options.iter().enumerate().map(|(i, o)| format!("{}{o}", marker(i))).collect();
             let one = one.join("   ");
@@ -427,7 +421,7 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
             let right = right.as_deref().unwrap_or("");
             let rw = width(right).min((w - 1) / 2).max(0);
             let room = if right.is_empty() { w } else { w - rw - 1 };
-            let h = hanging(p, (x, y), room, pick(p, "• ", "* "), text);
+            let h = hanging(p, (x, y), room, "• ", text);
             put(p, x + w - rw, y, rw, right, Align::Right);
             h
         }
@@ -436,16 +430,16 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
 
 /// Render every screen at its own width.
 #[must_use]
-pub fn render_wireframe(wf: &Wireframe, ascii: bool) -> String {
-    render_wireframe_fit(wf, ascii, 0).text
+pub fn render_wireframe(wf: &Wireframe) -> String {
+    render_wireframe_fit(wf, 0).text
 }
 
 /// Render screens side by side, wrapping to a new row of screens when the
 /// next one would pass `max_width` (0 = unlimited). A screen wider than the
 /// budget is narrowed, down to `MIN_WIDTH`.
 #[must_use]
-pub fn render_wireframe_fit(wf: &Wireframe, ascii: bool, max_width: usize) -> Fit {
-    let mut p = Painter::new(ascii);
+pub fn render_wireframe_fit(wf: &Wireframe, max_width: usize) -> Fit {
+    let mut p = Painter::new();
     let (mut x, mut y, mut row_h) = (0i64, 0i64, 0i64);
     for s in &wf.screens {
         let w = if max_width == 0 { s.width } else { s.width.min(max_width).max(MIN_WIDTH) } as i64;

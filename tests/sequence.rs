@@ -3,7 +3,7 @@ use drawtool::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {
-    render_sequence(&parse_sequence(src).unwrap(), false).unwrap()
+    render_sequence(&parse_sequence(src).unwrap()).unwrap()
 }
 
 /// Column of the first occurrence of `needle` in each line containing it.
@@ -79,7 +79,7 @@ fn notes_on_every_side() {
     let sides: Vec<NoteSide> =
         seq.items.iter().filter_map(|i| if let Item::Note(n) = i { Some(n.side) } else { None }).collect();
     assert_eq!(sides, [NoteSide::Left, NoteSide::Right, NoteSide::Over, NoteSide::Over]);
-    let out = render_sequence(&seq, false).unwrap();
+    let out = render_sequence(&seq).unwrap();
     assert!(col(&out, "│ L │") < col(&out, "┬"), "left note sits left of the lifeline:\n{out}");
     assert!(col(&out, "│ R │") > col(&out, "┬"), "\n{out}");
     assert!(out.contains("span"), "\n{out}");
@@ -95,17 +95,6 @@ fn nested_loop_and_alt_frames() {
     // The inner frame sits inside the outer one.
     assert!(col(&out, "┌ alt ok") > col(&out, "┌ loop retry"), "\n{out}");
     assert_eq!(out.matches("└┄").count(), 2, "one bottom border per frame:\n{out}");
-}
-
-#[test]
-fn ascii_output_is_pure_ascii() {
-    let out = render_sequence(
-        &parse_sequence("sequenceDiagram\nloop x\na->>b: hi\nb-->>a: ok\nend\na->>a: self").unwrap(),
-        true,
-    )
-    .unwrap();
-    assert!(out.is_ascii(), "\n{out}");
-    assert!(out.contains("|<....") && out.contains("--->|"), "\n{out}");
 }
 
 #[test]
@@ -139,8 +128,8 @@ fn ignored_lines() {
 fn long_labels_wrap_to_fit_the_budget() {
     let src = "sequenceDiagram\nclient->>api: POST /checkout with a long description of the payload\napi->>pay: create a session for the destination wallet";
     let seq = parse_sequence(src).unwrap();
-    let wide = render_sequence_fit(&seq, false, 0).unwrap();
-    let fitted = render_sequence_fit(&seq, false, 60).unwrap();
+    let wide = render_sequence_fit(&seq, 0).unwrap();
+    let fitted = render_sequence_fit(&seq, 60).unwrap();
     assert!(wide.width > 60, "\n{}", wide.text);
     assert!(fitted.fits && fitted.width <= 60, "\n{}", fitted.text);
 }
@@ -159,7 +148,7 @@ fn box_groups_participants_without_drawing_a_frame() {
     let ids: Vec<&str> = seq.participants.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, ["a", "b"]);
     assert_eq!(seq.items.len(), 1, "only the message: box is not a frame");
-    let out = render_sequence(&seq, false).unwrap();
+    let out = render_sequence(&seq).unwrap();
     assert!(!out.contains('┄') && !out.contains("Purple"), "\n{out}");
 }
 
@@ -221,12 +210,12 @@ fn hand_built_sequences_render() {
         participants: vec![part("a"), part("b")],
         items: vec![loop_, Item::Message(msg), Item::Note(note), Item::End],
     };
-    let out = render_sequence(&seq, false).unwrap();
+    let out = render_sequence(&seq).unwrap();
     assert!(
         out.contains("│ a │") && out.contains("hi") && out.contains("both") && out.contains("loop again"),
         "\n{out}"
     );
-    assert!(render_sequence_fit(&seq, false, 0).unwrap().fits);
+    assert!(render_sequence_fit(&seq, 0).unwrap().fits);
 }
 
 #[test]
@@ -239,8 +228,8 @@ a->>b: x",
     let err = |edit: &dyn Fn(&mut Sequence)| {
         let mut seq = base.clone();
         edit(&mut seq);
-        assert!(render_sequence_fit(&seq, false, 0).is_err());
-        render_sequence(&seq, false).unwrap_err().message
+        assert!(render_sequence_fit(&seq, 0).is_err());
+        render_sequence(&seq).unwrap_err().message
     };
     let note = |side, first, last| Item::Note(Note { side, first, last, lines: vec!["n".into()] });
     let message = |from, to| Item::Message(Message { from, to, lines: vec![], dotted: false, head: Head::Open });

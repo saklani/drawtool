@@ -44,9 +44,7 @@ one wins (as in Mermaid). Cycles and self-loops work. The input is a strict subs
 the same source renders on GitHub; `RL`/`BT`, `--o`/`--x`, `~~~` and edges to a subgraph are errors.
 For "what does this screen look like" (UI code, a component tree, a design discussion), draw a
 `wireframe` from the real components and copy; several screens side by side show a flow.
-`drawtool --diff before.mmd after.mmd` draws one diagram of a change: `+` added, `-` removed,
-`~` relabelled. Use it to explain a refactor or a PR (write both versions to temp files).
-Flags: `--ascii` for plain ASCII, `-d TD` to override direction, `-w N` column budget
+Flags: `-d TD` to override direction, `-w N` column budget
 (default 120 when run by Claude). A too-wide LR diagram gets its labels wrapped, then continues on
 the next row: a single crossing edge is drawn wrapping around, several are joined by numbered
 connectors (①). drawtool never switches to TD by itself; if it still can't

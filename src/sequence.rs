@@ -458,13 +458,13 @@ fn draw_message(p: &mut Painter, m: &Message, row: i64, x: &[i64]) {
 /// # Errors
 ///
 /// A hand-built sequence that fails [`Sequence::validate`].
-pub fn render_sequence(seq: &Sequence, ascii: bool) -> Result<String, Error> {
+pub fn render_sequence(seq: &Sequence) -> Result<String, Error> {
     seq.validate()?;
-    Ok(draw(seq, ascii))
+    Ok(draw(seq))
 }
 
 /// [`render_sequence`] for a sequence known to be valid.
-fn draw(seq: &Sequence, ascii: bool) -> String {
+fn draw(seq: &Sequence) -> String {
     if seq.participants.is_empty() {
         return String::new();
     }
@@ -482,7 +482,7 @@ fn draw(seq: &Sequence, ascii: bool) -> String {
         rows.push(rows[rows.len() - 1] + height);
     }
     let footer = rows.pop().expect("starts with the first item's row") + 1;
-    let mut p = Painter::new(ascii);
+    let mut p = Painter::new();
     for (i, &xi) in x.iter().enumerate() {
         let net = p.net();
         p.line(&[(xi, boxh[i] - 1), (xi, footer)], net, Stroke::LIGHT, Layer::Main);
@@ -541,8 +541,8 @@ pub fn wrap_sequence(seq: &Sequence, max: usize) -> Sequence {
 /// # Errors
 ///
 /// A hand-built sequence that fails [`Sequence::validate`].
-pub fn render_sequence_fit(seq: &Sequence, ascii: bool, max_width: usize) -> Result<Fit, Error> {
+pub fn render_sequence_fit(seq: &Sequence, max_width: usize) -> Result<Fit, Error> {
     seq.validate()?;
     let wrapped = |w: Option<usize>| w.map_or_else(|| seq.clone(), |w| wrap_sequence(seq, w));
-    Ok(first_fit(max_width, WRAP_WIDTHS.into_iter().map(|w| draw(&wrapped(w), ascii))))
+    Ok(first_fit(max_width, WRAP_WIDTHS.into_iter().map(|w| draw(&wrapped(w)))))
 }

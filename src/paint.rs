@@ -83,12 +83,11 @@ struct Arm {
 
 #[derive(Default)]
 pub struct Painter {
-    pub ascii: bool,
     /// Draw crossings as `╂` (flowcharts), so they can't be mistaken for a
     /// `┼` join; otherwise the vertical line just runs through (lifelines).
     pub mark_crossings: bool,
-    /// Text and symbols; the flag marks symbols, which ASCII mode translates.
-    glyphs: HashMap<Pt, (char, bool)>,
+    /// Text and symbols.
+    glyphs: HashMap<Pt, char>,
     /// Main lines, then the under layer.
     lines: [HashMap<Pt, Vec<Arm>>; 2],
     round: HashSet<Pt>,
@@ -100,8 +99,8 @@ pub struct Painter {
 
 impl Painter {
     #[must_use]
-    pub fn new(ascii: bool) -> Self {
-        Painter { ascii, ..Default::default() }
+    pub fn new() -> Self {
+        Painter::default()
     }
 
     /// A fresh net id.
@@ -112,16 +111,16 @@ impl Painter {
 
     pub fn text(&mut self, mut x: i64, y: i64, s: &str) {
         for ch in s.chars() {
-            self.glyphs.insert((x, y), (ch, false));
+            self.glyphs.insert((x, y), ch);
             if char_width(ch) == 2 {
-                self.glyphs.insert((x + 1, y), (WIDE, false));
+                self.glyphs.insert((x + 1, y), WIDE);
             }
             x += char_width(ch);
         }
     }
 
     pub fn symbol(&mut self, x: i64, y: i64, ch: char) {
-        self.glyphs.insert((x, y), (ch, true));
+        self.glyphs.insert((x, y), ch);
     }
 
     /// An axis-aligned polyline through `pts`.
@@ -221,8 +220,8 @@ impl Painter {
     /// The character a cell shows: text or symbol, else main line, else under.
     #[must_use]
     pub fn cell(&self, pt: Pt) -> char {
-        if let Some(&(ch, symbol)) = self.glyphs.get(&pt) {
-            return if symbol && self.ascii { ascii_symbol(ch) } else { ch };
+        if let Some(&ch) = self.glyphs.get(&pt) {
+            return ch;
         }
         self.lines.iter().find_map(|layer| layer.get(&pt)).map_or(' ', |arms| self.resolve(pt, arms))
     }
@@ -234,15 +233,11 @@ impl Painter {
     }
 
     fn straight(&self, Stroke { weight, style }: Stroke, vertical: bool) -> char {
-        let pair = match (self.ascii, weight, style) {
-            (false, Weight::Heavy, _) | (false, _, Style::Thick) => ['┃', '━'],
-            (false, Weight::Double, _) => ['║', '═'],
-            (false, _, Style::Dotted) => ['┆', '┄'],
-            (false, _, Style::Solid) => ['│', '─'],
-            (true, Weight::Heavy, _) => ['#', '='],
-            (true, Weight::Double, _) | (true, _, Style::Thick) => ['|', '='],
-            (true, _, Style::Dotted) => [':', '.'],
-            (true, _, Style::Solid) => ['|', '-'],
+        let pair = match (weight, style) {
+            (Weight::Heavy, _) | (_, Style::Thick) => ['┃', '━'],
+            (Weight::Double, _) => ['║', '═'],
+            (_, Style::Dotted) => ['┆', '┄'],
+            (_, Style::Solid) => ['│', '─'],
         };
         pair[usize::from(!vertical)]
     }
@@ -251,14 +246,6 @@ impl Painter {
     /// and horizontal arms.
     fn junction(&self, bits: u8, vertical: Weight, horizontal: Weight, round: bool) -> char {
         use Weight::{Double, Heavy, Light};
-        if self.ascii {
-            return match (vertical, horizontal, round) {
-                (Heavy, Heavy, _) => '#',
-                (_, _, true) if bits & D != 0 => '.',
-                (_, _, true) => '\'',
-                _ => '+',
-            };
-        }
         let table = match (vertical, horizontal) {
             (Light, Light) if round => ROUND,
             (Light, Light) => LIGHT,
@@ -279,7 +266,7 @@ impl Painter {
         let through = arms.iter().find(|a| a.bits == vert);
         if let Some(v) = through.filter(|_| pure && arms.iter().any(|a| a.bits == horz)) {
             // A crossing, not a join.
-            return if self.mark_crossings && !self.ascii { '╂' } else { self.straight(v.stroke, true) };
+            return if self.mark_crossings { '╂' } else { self.straight(v.stroke, true) };
         }
         let bits = arms.iter().fold(0, |b, a| b | a.bits);
         let style = if arms.iter().all(|a| a.stroke.style == arms[0].stroke.style) {
@@ -306,33 +293,19 @@ impl Painter {
     }
 }
 
-fn ascii_symbol(ch: char) -> char {
-    match ch {
-        '▼' | '▾' => 'v',
-        '▲' => '^',
-        '►' => '>',
-        '◄' => '<',
-        '░' => '.',
-        '•' => '*',
-        '━' => '=',
-        '─' => '-',
-        c => c,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn painted(ascii: bool, draw: impl FnOnce(&mut Painter)) -> String {
-        let mut p = Painter::new(ascii);
+    fn painted(draw: impl FnOnce(&mut Painter)) -> String {
+        let mut p = Painter::new();
         draw(&mut p);
         p.finish()
     }
 
     #[test]
     fn an_edge_leaving_a_box_border_makes_a_tee() {
-        let out = painted(false, |p| {
+        let out = painted(|p| {
             p.rect((0, 0), (5, 3), Stroke::LIGHT, Corners::Square, Layer::Main);
             let net = p.net();
             p.line(&[(2, 2), (2, 4)], net, Stroke::LIGHT, Layer::Main);
@@ -342,7 +315,7 @@ mod tests {
 
     #[test]
     fn rounded_heavy_and_double_corners() {
-        let corners = |stroke, corners| painted(false, |p| p.rect((0, 0), (3, 3), stroke, corners, Layer::Main));
+        let corners = |stroke, corners| painted(|p| p.rect((0, 0), (3, 3), stroke, corners, Layer::Main));
         assert!(corners(Stroke::LIGHT, Corners::Round).starts_with('╭'));
         assert!(corners(Stroke::HEAVY, Corners::Square).starts_with('┏'));
         assert!(corners(Stroke::new(Weight::Double, Style::Solid), Corners::Square).starts_with('╔'));
@@ -350,7 +323,7 @@ mod tests {
 
     #[test]
     fn a_light_edge_on_a_double_border_is_a_mixed_tee() {
-        let out = painted(false, |p| {
+        let out = painted(|p| {
             p.rect((0, 0), (5, 3), Stroke::new(Weight::Double, Style::Solid), Corners::Square, Layer::Main);
             let net = p.net();
             p.line(&[(2, 2), (2, 3)], net, Stroke::LIGHT, Layer::Main);
@@ -361,7 +334,7 @@ mod tests {
     #[test]
     fn crossing_vs_join() {
         let cross = |mark_crossings, same_net| {
-            painted(false, |p| {
+            painted(|p| {
                 p.mark_crossings = mark_crossings;
                 let (a, b) = (p.net(), p.net());
                 p.line(&[(0, 1), (2, 1)], a, Stroke::LIGHT, Layer::Main);
@@ -375,7 +348,7 @@ mod tests {
 
     #[test]
     fn a_trunk_shared_by_two_styles_is_drawn_solid() {
-        let out = painted(false, |p| {
+        let out = painted(|p| {
             let net = p.net();
             p.line(&[(0, 0), (3, 0)], net, Stroke::DOTTED, Layer::Main);
             p.line(&[(0, 0), (3, 0)], net, Stroke::light(Style::Thick), Layer::Main);
@@ -385,7 +358,7 @@ mod tests {
 
     #[test]
     fn the_under_layer_only_shows_in_empty_cells() {
-        let out = painted(false, |p| {
+        let out = painted(|p| {
             p.rect((0, 0), (5, 3), Stroke::DOTTED, Corners::Square, Layer::Under);
             let net = p.net();
             p.line(&[(0, 1), (4, 1)], net, Stroke::LIGHT, Layer::Main);
@@ -395,8 +368,8 @@ mod tests {
 
     #[test]
     fn pasted_lines_keep_their_nets_and_size() {
-        let out = painted(false, |p| {
-            let mut other = Painter::new(false);
+        let out = painted(|p| {
+            let mut other = Painter::new();
             let net = other.net();
             other.line(&[(1, 0), (1, 2)], net, Stroke::LIGHT, Layer::Main);
             other.text(0, 3, "ab");
@@ -409,18 +382,8 @@ mod tests {
     }
 
     #[test]
-    fn ascii_translates_symbols_but_never_text() {
-        let out = painted(true, |p| {
-            p.rect((0, 0), (5, 3), Stroke::LIGHT, Corners::Round, Layer::Main);
-            p.symbol(0, 3, '►');
-            p.text(1, 3, "►");
-        });
-        assert_eq!(out, ".---.\n|   |\n'---'\n>►");
-    }
-
-    #[test]
     fn wide_text_takes_two_cells_and_negative_coordinates_shift_to_zero() {
-        let out = painted(false, |p| {
+        let out = painted(|p| {
             p.text(-3, -1, "数据");
             p.symbol(1, -1, '!');
         });

@@ -17,20 +17,15 @@ fn examples_match_golden_output() {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap();
-        let render = |ascii: bool| {
-            let opts = drawtool::Options { ascii, max_width: 120, ..Default::default() };
-            drawtool::render_source(&source, &opts).unwrap().text
-        };
+        let opts = drawtool::Options { max_width: 120, ..Default::default() };
+        let got = drawtool::render_source(&source, &opts).unwrap().text + "\n";
         let stem = path.file_stem().unwrap().to_str().unwrap();
-        for (ascii, suffix) in [(false, "txt"), (true, "ascii.txt")] {
-            count += 1;
-            let got = render(ascii) + "\n";
-            let golden = root.join("tests/golden").join(format!("{stem}.{suffix}"));
-            if update {
-                fs::write(&golden, &got).unwrap();
-            } else if fs::read_to_string(&golden).ok().as_deref() != Some(got.as_str()) {
-                failures.push(format!("{}:\n{got}", golden.display()));
-            }
+        count += 1;
+        let golden = root.join("tests/golden").join(format!("{stem}.txt"));
+        if update {
+            fs::write(&golden, &got).unwrap();
+        } else if fs::read_to_string(&golden).ok().as_deref() != Some(got.as_str()) {
+            failures.push(format!("{}:\n{got}", golden.display()));
         }
     }
     assert!(count > 0, "no examples found");

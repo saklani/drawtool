@@ -27,18 +27,18 @@ fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
 /// Render within `max_width` columns (0 = unlimited), keeping `direction`.
 /// If nothing fits, returns the narrowest single-band attempt.
 #[must_use]
-pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fit {
-    let attempts = WRAP_WIDTHS.iter().map(|&w| render(&wrapped(graph, w), Some(direction), ascii));
+pub fn render_fit(graph: &Graph, direction: Direction, max_width: usize) -> Fit {
+    let attempts = WRAP_WIDTHS.iter().map(|&w| render(&wrapped(graph, w), Some(direction)));
     let first = first_fit(max_width, attempts);
     if first.fits || direction == Direction::TD {
         return first;
     }
-    WRAP_WIDTHS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), ascii, max_width)).unwrap_or(first)
+    WRAP_WIDTHS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), max_width)).unwrap_or(first)
 }
 
-fn connector_label(n: usize, ascii: bool) -> String {
+fn connector_label(n: usize) -> String {
     match char::from_u32(0x2460 + n as u32 - 1) {
-        Some(c) if !ascii && n <= 20 => c.to_string(),
+        Some(c) if n <= 20 => c.to_string(),
         _ => format!("({n})"),
     }
 }
@@ -67,13 +67,13 @@ struct Band {
     connectors: HashMap<usize, NodeIndex>,
 }
 
-fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Band {
+fn band_graph(graph: &Graph, band_of: &[usize], b: usize) -> Band {
     let number = connector_numbers(graph, band_of);
     let (mut g, mut connectors) = (DiGraph::new(), HashMap::new());
     let mut connector = |g: &mut DiGraph<NodeDef, EdgeDef>, n: usize| {
         *connectors.entry(n).or_insert_with(|| {
             // An id with a space can't be a node's, so it never collides.
-            g.add_node(NodeDef::new(&format!("connector {n}"), vec![connector_label(n, ascii)], Shape::Round))
+            g.add_node(NodeDef::new(&format!("connector {n}"), vec![connector_label(n)], Shape::Round))
         })
     };
     // In-connectors come first, one per node entered from another band.
@@ -105,7 +105,7 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Band {
 
 /// Split the layers into consecutive LR bands that each fit, choosing the
 /// cuts by dynamic programming. `None` if a single layer is too wide on its own.
-fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
+fn fit_bands(graph: &Graph, max_width: usize) -> Option<Fit> {
     let layers = layers(graph);
     let distinct: Vec<usize> = layers.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
     let band_of = |cuts: &[usize]| -> Vec<usize> {
@@ -117,7 +117,7 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
     let mut band_height = |i: usize, j: usize| {
         *memo.entry((i, j)).or_insert_with(|| {
             let cuts: Vec<usize> = [0].into_iter().chain((i > 0).then_some(i)).chain((j < n).then_some(j)).collect();
-            let text = render(&band_graph(graph, &band_of(&cuts), usize::from(i > 0), ascii).graph, None, ascii);
+            let text = render(&band_graph(graph, &band_of(&cuts), usize::from(i > 0)).graph, None);
             (block_width(&text) as usize <= max_width).then(|| text.lines().count())
         })
     };
@@ -155,16 +155,16 @@ fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
         return None;
     }
     let band_of = band_of(&cuts);
-    let bands: Vec<Band> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b, ascii)).collect();
-    let scenes = bands.iter().map(|band| scene(&band.graph, None, ascii)).collect::<Option<Vec<_>>>()?;
+    let bands: Vec<Band> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b)).collect();
+    let scenes = bands.iter().map(|band| scene(&band.graph, None)).collect::<Option<Vec<_>>>()?;
     let width = scenes.iter().map(|s| block_width(&s.painter.finish()) as usize).max().unwrap_or(0);
-    let text = join_bands(graph, &band_of, &bands, scenes, ascii);
+    let text = join_bands(graph, &band_of, &bands, scenes);
     (width <= max_width).then_some(Fit { text, width, fits: true })
 }
 
 /// Stack the bands, joining each break by a wrap-around line when exactly
 /// one edge crosses it and by a blank row (keeping connectors) else.
-fn join_bands(graph: &Graph, band_of: &[usize], bands: &[Band], scenes: Vec<Scene>, ascii: bool) -> String {
+fn join_bands(graph: &Graph, band_of: &[usize], bands: &[Band], scenes: Vec<Scene>) -> String {
     let numbers = connector_numbers(graph, band_of);
     let nb = bands.len();
     let (mut outs, mut ins) = (vec![HashSet::new(); nb], vec![HashSet::new(); nb]);
@@ -174,14 +174,14 @@ fn join_bands(graph: &Graph, band_of: &[usize], bands: &[Band], scenes: Vec<Scen
     }
     // Connector `k`'s node in band `b`, as an index into the band's boxes.
     let connector = |b: usize, k: usize| bands[b].connectors.get(&k).map(|v| v.index());
-    let mut canvas = Painter::new(ascii);
+    let mut canvas = Painter::new();
     canvas.mark_crossings = true;
     // The next free row, and the previous band's boxes where they sit on the canvas.
     let (mut top, mut above): (i64, Vec<(Pt, Pt)>) = (0, vec![]);
     for (b, scene) in scenes.into_iter().enumerate() {
         let Some(((x0, y0), (_, y1))) = scene.painter.bounds() else { continue };
         // The band on its own, with its top-left at (0, 0).
-        let mut band = Scene { painter: Painter::new(ascii), boxes: scene.boxes };
+        let mut band = Scene { painter: Painter::new(), boxes: scene.boxes };
         band.painter.paste(&scene.painter, (-x0, -y0));
         band.boxes.iter_mut().for_each(|((x, y), _)| (*x, *y) = (*x - x0, *y - y0));
         let mut route = None;

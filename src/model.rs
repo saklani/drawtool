@@ -45,15 +45,12 @@ pub enum Arrow {
     Both,
 }
 
-/// How a node is emphasised: by `--highlight`, or by `--diff`.
+/// How a node is emphasised: by `--highlight`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mark {
     #[default]
     None,
     Highlight,
-    Added,
-    Removed,
-    Changed,
 }
 
 #[derive(Clone, Debug)]

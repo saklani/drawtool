@@ -3,24 +3,20 @@
 //! crossing a break wraps around like text, several are joined by numbered
 //! connectors (①). TD only ever wraps labels.
 
-use crate::layout::{draw, scene, structure, Scene, Structure};
+use crate::layout::{layers, render, scene, Scene};
 use crate::model::{Arrow, Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::paint::{Layer, Painter, Pt, Stroke};
-use crate::text::{block_width, first_fit, wrap, Fit};
+use crate::text::{block_width, first_fit, wrap_all, Fit, WRAP_WIDTHS};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{BTreeSet, HashMap, HashSet};
-
-/// Label wrap widths tried in order; `None` leaves labels as written.
-const WRAPS: [Option<usize>; 4] = [None, Some(24), Some(16), Some(12)];
 
 /// Copy of `graph` with every node and edge label wrapped at `max` columns.
 #[must_use]
 pub fn wrap_labels(graph: &Graph, max: usize) -> Graph {
     let mut g = graph.clone();
-    let wrap_all = |lines: &mut Vec<String>| *lines = lines.iter().flat_map(|l| wrap(l, max, false)).collect();
-    g.g.node_weights_mut().for_each(|n| wrap_all(&mut n.lines));
-    g.g.edge_weights_mut().filter_map(|e| e.label.as_mut()).for_each(wrap_all);
+    g.g.node_weights_mut().for_each(|n| wrap_all(&mut n.lines, max));
+    g.g.edge_weights_mut().filter_map(|e| e.label.as_mut()).for_each(|l| wrap_all(l, max));
     g
 }
 
@@ -32,13 +28,12 @@ fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
 /// If nothing fits, returns the narrowest single-band attempt.
 #[must_use]
 pub fn render_fit(graph: &Graph, direction: Direction, ascii: bool, max_width: usize) -> Fit {
-    // Wrapping labels leaves the structure as it is: work it out once.
-    let s = structure(graph);
-    let first = first_fit(max_width, WRAPS.iter().map(|&w| draw(&wrapped(graph, w), &s, Some(direction), ascii)));
+    let attempts = WRAP_WIDTHS.iter().map(|&w| render(&wrapped(graph, w), Some(direction), ascii));
+    let first = first_fit(max_width, attempts);
     if first.fits || direction == Direction::TD {
         return first;
     }
-    WRAPS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), &s, ascii, max_width)).unwrap_or(first)
+    WRAP_WIDTHS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), ascii, max_width)).unwrap_or(first)
 }
 
 fn connector_label(n: usize, ascii: bool) -> String {
@@ -64,14 +59,21 @@ fn connector_numbers(graph: &Graph, band_of: &[usize]) -> HashMap<usize, usize> 
     number
 }
 
-/// The sub-graph for band `b`: its own nodes and edges, plus a numbered
-/// connector wherever an edge leaves or enters the band.
-fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph {
+/// One row of a diagram broken into bands: the sub-graph of its own nodes
+/// and edges, with a numbered connector node wherever an edge leaves or
+/// enters the band, found by its number.
+struct Band {
+    graph: Graph,
+    connectors: HashMap<usize, NodeIndex>,
+}
+
+fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Band {
     let number = connector_numbers(graph, band_of);
     let (mut g, mut connectors) = (DiGraph::new(), HashMap::new());
     let mut connector = |g: &mut DiGraph<NodeDef, EdgeDef>, n: usize| {
         *connectors.entry(n).or_insert_with(|| {
-            g.add_node(NodeDef::new(&format!("\0c{n}"), vec![connector_label(n, ascii)], Shape::Round))
+            // An id with a space can't be a node's, so it never collides.
+            g.add_node(NodeDef::new(&format!("connector {n}"), vec![connector_label(n, ascii)], Shape::Round))
         })
     };
     // In-connectors come first, one per node entered from another band.
@@ -98,28 +100,26 @@ fn band_graph(graph: &Graph, band_of: &[usize], b: usize, ascii: bool) -> Graph 
         .filter(|st| band_of[st[0].index()] == b)
         .map(|st| st.iter().map(|v| index[&v.index()]).collect())
         .collect();
-    Graph { direction: Direction::LR, g, groups: graph.groups.clone(), stacks }
+    Band { graph: Graph { direction: Direction::LR, g, groups: graph.groups.clone(), stacks }, connectors }
 }
 
 /// Split the layers into consecutive LR bands that each fit, choosing the
 /// cuts by dynamic programming. `None` if a single layer is too wide on its own.
-fn fit_bands(graph: &Graph, s: &Structure, ascii: bool, max_width: usize) -> Option<Fit> {
-    let layers = &s.layer;
+fn fit_bands(graph: &Graph, ascii: bool, max_width: usize) -> Option<Fit> {
+    let layers = layers(graph);
     let distinct: Vec<usize> = layers.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
     let band_of = |cuts: &[usize]| -> Vec<usize> {
         layers.iter().map(|l| cuts.iter().filter(|&&c| distinct[c] <= *l).count() - 1).collect()
-    };
-    let fits = |cuts: &[usize], b: usize| {
-        let band = band_graph(graph, &band_of(cuts), b, ascii);
-        let text = draw(&band, &structure(&band), Some(Direction::LR), ascii);
-        (block_width(&text) as usize <= max_width).then_some(text)
     };
     // Height of band [i, j) of the distinct layers, if it fits on its own.
     let n = distinct.len();
     let mut memo: HashMap<(usize, usize), Option<usize>> = HashMap::new();
     let mut band_height = |i: usize, j: usize| {
-        let cuts: Vec<usize> = [0].into_iter().chain((i > 0).then_some(i)).chain((j < n).then_some(j)).collect();
-        *memo.entry((i, j)).or_insert_with(|| fits(&cuts, usize::from(i > 0)).map(|t| t.lines().count()))
+        *memo.entry((i, j)).or_insert_with(|| {
+            let cuts: Vec<usize> = [0].into_iter().chain((i > 0).then_some(i)).chain((j < n).then_some(j)).collect();
+            let text = render(&band_graph(graph, &band_of(&cuts), usize::from(i > 0), ascii).graph, None, ascii);
+            (block_width(&text) as usize <= max_width).then(|| text.lines().count())
+        })
     };
     // A cut before layer p costs one per edge crossing it (so one edge wraps
     // around like text) and three per subgraph it splits.
@@ -155,25 +155,25 @@ fn fit_bands(graph: &Graph, s: &Structure, ascii: bool, max_width: usize) -> Opt
         return None;
     }
     let band_of = band_of(&cuts);
-    let graphs: Vec<Graph> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b, ascii)).collect();
-    let scenes =
-        graphs.iter().map(|g| scene(g, &structure(g), Some(Direction::LR), ascii)).collect::<Option<Vec<_>>>()?;
+    let bands: Vec<Band> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b, ascii)).collect();
+    let scenes = bands.iter().map(|band| scene(&band.graph, None, ascii)).collect::<Option<Vec<_>>>()?;
     let width = scenes.iter().map(|s| block_width(&s.painter.finish()) as usize).max().unwrap_or(0);
-    let text = join_bands(graph, &band_of, &graphs, scenes, ascii);
+    let text = join_bands(graph, &band_of, &bands, scenes, ascii);
     (width <= max_width).then_some(Fit { text, width, fits: true })
 }
 
 /// Stack the bands, joining each break by a wrap-around line when exactly
 /// one edge crosses it and by a blank row (keeping connectors) else.
-fn join_bands(graph: &Graph, band_of: &[usize], graphs: &[Graph], scenes: Vec<Scene>, ascii: bool) -> String {
+fn join_bands(graph: &Graph, band_of: &[usize], bands: &[Band], scenes: Vec<Scene>, ascii: bool) -> String {
     let numbers = connector_numbers(graph, band_of);
-    let nb = graphs.len();
+    let nb = bands.len();
     let (mut outs, mut ins) = (vec![HashSet::new(); nb], vec![HashSet::new(); nb]);
     for (s, t) in crossing(graph, band_of) {
         outs[band_of[s]].insert(numbers[&t]);
         ins[band_of[t]].insert(numbers[&t]);
     }
-    let connector = |b: usize, k: usize| graphs[b].g.node_weights().position(|n| n.id == format!("\0c{k}"));
+    // Connector `k`'s node in band `b`, as an index into the band's boxes.
+    let connector = |b: usize, k: usize| bands[b].connectors.get(&k).map(|v| v.index());
     let mut canvas = Painter::new(ascii);
     canvas.mark_crossings = true;
     // The next free row, and the previous band's boxes where they sit on the canvas.

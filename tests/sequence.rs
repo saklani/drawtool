@@ -216,7 +216,7 @@ fn hand_built_sequences_render() {
     let part = |id: &str| Participant { id: id.into(), lines: vec![id.into()], actor: false };
     let msg = Message { from: 0, to: 1, lines: vec!["hi".into()], dotted: false, head: Head::Arrow };
     let note = Note { side: NoteSide::Over, first: 0, last: 1, lines: vec!["both".into()] };
-    let loop_ = Item::Start { kind: "loop".into(), text: "again".into() };
+    let loop_ = Item::Start("loop again".into());
     let seq = Sequence {
         participants: vec![part("a"), part("b")],
         items: vec![loop_, Item::Message(msg), Item::Note(note), Item::End],
@@ -250,9 +250,9 @@ a->>b: x",
     assert!(err(&|s| s.items.push(note(NoteSide::Over, 1, 0))).contains("after its `last`"));
     assert!(err(&|s| s.items.push(note(NoteSide::Left, 0, 1))).contains("only `Over`"));
     assert!(err(&|s| s.items.insert(0, Item::End)).contains("item 0: outside a frame"));
-    let divider = Item::Divider { kind: "else".into(), text: String::new() };
+    let divider = Item::Divider("else".into());
     assert!(err(&|s| s.items.push(divider.clone())).contains("item 1: outside a frame"));
-    let start = Item::Start { kind: "loop".into(), text: String::new() };
+    let start = Item::Start("loop".into());
     assert!(err(&|s| s.items.push(start.clone())).contains("never closed"));
     assert!(err(&|s| s.participants.clear()).contains("no participant 1"));
 }

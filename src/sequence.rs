@@ -8,7 +8,7 @@
 use crate::model::Style;
 use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::parse::{clean_label, strip_comment};
-use crate::text::{first_fit, width, wrap, Fit};
+use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
 use crate::Error;
 use regex::Regex;
 use std::collections::HashMap;
@@ -57,16 +57,10 @@ pub struct Note {
 pub enum Item {
     Message(Message),
     Note(Note),
-    /// `loop`, `alt`, `opt`, `par`, ... opening a frame.
-    Start {
-        kind: String,
-        text: String,
-    },
-    /// `else` / `and` inside a frame.
-    Divider {
-        kind: String,
-        text: String,
-    },
+    /// `loop`, `alt`, `opt`, `par`, ... opening a frame, with its title (`loop every 5m`).
+    Start(String),
+    /// `else` / `and` inside a frame, with its title.
+    Divider(String),
     End,
 }
 
@@ -99,11 +93,11 @@ impl Sequence {
                 Item::Note(note) if note.side != NoteSide::Over && note.first != note.last => {
                     Some("only `Over` notes can span two participants".into())
                 }
-                Item::Start { .. } => {
+                Item::Start(_) => {
                     open += 1;
                     None
                 }
-                Item::Divider { .. } | Item::End if open == 0 => Some("outside a frame".into()),
+                Item::Divider(_) | Item::End if open == 0 => Some("outside a frame".into()),
                 Item::End => {
                     open -= 1;
                     None
@@ -146,7 +140,7 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
 pub fn is_sequence(text: &str) -> bool {
     text.lines()
         .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("%%") && !l.starts_with('#'))
+        .find(|l| !l.is_empty() && !l.starts_with("%%"))
         .is_some_and(|l| l.eq_ignore_ascii_case("sequenceDiagram"))
 }
 
@@ -160,6 +154,22 @@ fn text_lines(text: Option<&str>) -> Vec<String> {
     }
 }
 
+/// Participants in order of first mention, found again by id.
+#[derive(Default)]
+struct Participants {
+    list: Vec<Participant>,
+    index: HashMap<String, usize>,
+}
+
+impl Participants {
+    fn get(&mut self, id: &str) -> usize {
+        *self.index.entry(id.to_string()).or_insert_with(|| {
+            self.list.push(Participant { id: id.to_string(), lines: vec![id.to_string()], actor: false });
+            self.list.len() - 1
+        })
+    }
+}
+
 /// Parse sequence diagram source.
 ///
 /// # Errors
@@ -168,30 +178,27 @@ fn text_lines(text: Option<&str>) -> Vec<String> {
 /// unbalanced block.
 pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
     let p = &*PATTERNS;
-    let (mut parts, mut index): (Vec<Participant>, HashMap<String, usize>) = Default::default();
-    let mut get = |id: &str, parts: &mut Vec<Participant>| {
-        *index.entry(id.to_string()).or_insert_with(|| {
-            parts.push(Participant { id: id.to_string(), lines: vec![id.to_string()], actor: false });
-            parts.len() - 1
-        })
-    };
+    let mut parts = Participants::default();
     let mut items = Vec::new();
-    // Open blocks: kind, and where they start (for "never closed").
+    // Open blocks: keyword, and where they start (for "never closed").
     let mut open: Vec<(String, usize, usize)> = Vec::new();
     for (n, raw) in text.lines().enumerate() {
         let lineno = n + 1;
         let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
-        let opt = |m: Option<regex::Match>| m.map_or("", |m| m.as_str()).trim().to_string();
+        let title = |c: &regex::Captures| match c.get(2).map(|m| m.as_str().trim()) {
+            Some(text) if !text.is_empty() => format!("{} {text}", &c[1]),
+            _ => c[1].to_string(),
+        };
         // 1-based character column of byte offset `at` in `line`, in the original line.
         let indent = raw[..raw.len() - raw.trim_start().len()].chars().count();
         let col = |at: usize| indent + line[..at].chars().count() + 1;
-        if line.is_empty() || line.starts_with("%%") || line.starts_with('#') || p.ignored.is_match(line) {
+        if line.is_empty() || line.starts_with("%%") || p.ignored.is_match(line) {
             continue;
         } else if let Some(c) = p.participant.captures(line) {
-            let i = get(&c[2], &mut parts);
-            parts[i].actor = c[1].eq_ignore_ascii_case("actor");
+            let i = parts.get(&c[2]);
+            parts.list[i].actor = c[1].eq_ignore_ascii_case("actor");
             if let Some(alias) = c.get(3) {
-                parts[i].lines = text_lines(Some(alias.as_str()));
+                parts.list[i].lines = text_lines(Some(alias.as_str()));
             }
         } else if let Some(c) = p.note.captures(line) {
             let side = match c[1].to_lowercase().as_str() {
@@ -199,8 +206,8 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
                 "right of" => NoteSide::Right,
                 _ => NoteSide::Over,
             };
-            let a = get(&c[2], &mut parts);
-            let z = c.get(3).map_or(a, |m| get(m.as_str(), &mut parts));
+            let a = parts.get(&c[2]);
+            let z = c.get(3).map_or(a, |m| parts.get(m.as_str()));
             if side != NoteSide::Over && a != z {
                 let at = c.get(3).map_or(0, |m| m.start());
                 return Err(Error::at_column(lineno, col(at), "only `Note over` can span two participants"));
@@ -219,16 +226,16 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
             // and a `rect`'s text is just its colour: neither needs a title.
             match &c[1] {
                 "box" => {}
-                "rect" => items.push(Item::Start { kind: c[1].to_string(), text: String::new() }),
-                kind => items.push(Item::Start { kind: kind.to_string(), text: opt(c.get(2)) }),
+                "rect" => items.push(Item::Start("rect".to_string())),
+                _ => items.push(Item::Start(title(&c))),
             }
         } else if let Some(c) = p.divider.captures(line) {
             if open.is_empty() {
                 return Err(Error::at_column(lineno, col(0), format!("`{}` outside a block", &c[1])));
             }
-            items.push(Item::Divider { kind: c[1].to_string(), text: opt(c.get(2)) });
+            items.push(Item::Divider(title(&c)));
         } else if let Some(c) = p.message.captures(line) {
-            let (from, to, arrow) = (get(&c[1], &mut parts), get(&c[3], &mut parts), &c[2]);
+            let (from, to, arrow) = (parts.get(&c[1]), parts.get(&c[3]), &c[2]);
             let head = match arrow {
                 a if a.ends_with('x') => Head::Cross,
                 a if a.ends_with(">>") || a.ends_with(')') => Head::Arrow,
@@ -244,12 +251,10 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
     if let Some((kind, lineno, column)) = open.pop() {
         return Err(Error::at_column(lineno, column, format!("`{kind}` is never closed with `end`")));
     }
-    Ok(Sequence { participants: parts, items })
+    Ok(Sequence { participants: parts.list, items })
 }
 
-// ---------------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------------
+// ---- Layout -----------------------------------------------------------------
 
 fn lines_width(lines: &[String]) -> i64 {
     lines.iter().map(|l| width(l)).max().unwrap_or(0)
@@ -261,19 +266,9 @@ fn halves(width: i64) -> (i64, i64) {
     (left, width - 1 - left)
 }
 
-fn box_width(p: &Participant) -> i64 {
-    lines_width(&p.lines) + 4
-}
-
 /// Columns a message label needs between two neighbouring lifelines.
 fn label_room(m: &Message) -> i64 {
     (lines_width(&m.lines) + 4).max(6)
-}
-
-/// Left lifeline of the first gap in `lo..hi` wide enough for a label that
-/// needs `room` columns (layout guarantees one exists; else the first gap).
-fn label_gap(x: &[i64], lo: usize, hi: usize, room: i64) -> usize {
-    (lo..hi).find(|&i| x[i + 1] - x[i] >= room).unwrap_or(lo)
 }
 
 fn note_width(n: &Note) -> i64 {
@@ -299,14 +294,6 @@ fn item_extent(item: &Item, x: &[i64]) -> Option<(i64, i64)> {
     })
 }
 
-fn block_title(kind: &str, text: &str) -> String {
-    if text.is_empty() {
-        kind.to_string()
-    } else {
-        format!("{kind} {text}")
-    }
-}
-
 /// A frame opened by `loop`/`alt`/..., spanning columns `left..=right` from
 /// item `top` to item `bottom` (`None` if never closed), with its dividers.
 struct Frame {
@@ -326,19 +313,17 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
     let mut out: Vec<Frame> = Vec::new();
     // Open frames: index, content extent so far, widest title or divider.
     let mut stack: Vec<(usize, Extent, i64)> = Vec::new();
-    let grow = |e: &mut Extent, (lo, hi): (i64, i64)| *e = Some(e.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+    let grow = |e: &mut Extent, (lo, hi)| *e = Some(e.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
     for (i, item) in items.iter().enumerate() {
         match item {
-            Item::Start { kind, text } => {
-                let title = block_title(kind, text);
-                stack.push((out.len(), None, width(&title)));
-                out.push(Frame { title, left: 0, right: 0, top: i, bottom: None, dividers: Vec::new() });
+            Item::Start(title) => {
+                stack.push((out.len(), None, width(title)));
+                out.push(Frame { title: title.clone(), left: 0, right: 0, top: i, bottom: None, dividers: Vec::new() });
             }
-            Item::Divider { kind, text } => {
+            Item::Divider(title) => {
                 if let Some(open) = stack.last_mut() {
-                    let title = block_title(kind, text);
-                    open.2 = open.2.max(width(&title));
-                    out[open.0].dividers.push((i, title));
+                    open.2 = open.2.max(width(title));
+                    out[open.0].dividers.push((i, title.clone()));
                 }
             }
             Item::End => {
@@ -360,78 +345,61 @@ fn frames(items: &[Item], x: &[i64]) -> Vec<Frame> {
     out
 }
 
-/// What an item needs from the gaps between lifelines `lo` and `hi`.
-enum Need {
-    /// The gaps together are at least this wide.
-    Span(usize, usize, i64),
-    /// One of the gaps is this wide, so a label fits without covering a lifeline.
-    Gap(usize, usize, i64),
-}
-
-/// The spacing each message, self-message and note asks for.
-fn needs(seq: &Sequence, boxw: &[i64]) -> Vec<Need> {
+/// Lifeline columns: wide enough for boxes, labels and notes, with every
+/// frame border clear of every lifeline.
+fn columns(seq: &Sequence, boxw: &[i64]) -> Vec<i64> {
     let n = seq.participants.len();
-    let mut out = Vec::new();
+    let mut gap: Vec<i64> = (0..n.saturating_sub(1)).map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3).collect();
+    // What each item needs: the gaps between lifelines lo and hi together at
+    // least `w` wide (span), or one of them `w` wide so a label fits without
+    // covering a lifeline (gap).
+    let (mut spans, mut gaps) = (Vec::new(), Vec::new());
     for item in &seq.items {
         match item {
-            Item::Message(m) if m.from == m.to => {
-                out.extend((m.from + 1 < n).then(|| Need::Span(m.from, m.from + 1, self_reach(m) + 3)));
-            }
-            Item::Message(m) => {
+            Item::Message(m) if m.from == m.to && m.from + 1 < n => spans.push((m.from, m.from + 1, self_reach(m) + 3)),
+            Item::Message(m) if m.from != m.to => {
                 let (lo, hi) = (m.from.min(m.to), m.from.max(m.to));
                 if hi - lo == 1 {
-                    out.push(Need::Span(lo, hi, label_room(m)));
+                    spans.push((lo, hi, label_room(m)));
                 } else if !m.lines.is_empty() {
-                    out.push(Need::Gap(lo, hi, label_room(m)));
+                    gaps.push((lo, hi, label_room(m)));
                 }
             }
             Item::Note(note) => {
                 let (w, i, j) = (note_width(note), note.first, note.last);
                 let (lh, rh) = halves(w);
                 match note.side {
-                    NoteSide::Right if i + 1 < n => out.push(Need::Span(i, i + 1, w + 3)),
-                    NoteSide::Left if i > 0 => out.push(Need::Span(i - 1, i, w + 3)),
+                    NoteSide::Right if i + 1 < n => spans.push((i, i + 1, w + 3)),
+                    NoteSide::Left if i > 0 => spans.push((i - 1, i, w + 3)),
                     // Each half clears the note's border and the neighbour's box.
                     NoteSide::Over if i == j => {
-                        out.extend((i > 0).then(|| Need::Span(i - 1, i, lh + 2 + halves(boxw[i - 1]).1.min(lh))));
-                        out.extend((i + 1 < n).then(|| Need::Span(i, i + 1, rh + 2 + halves(boxw[i + 1]).0.min(rh))));
+                        if i > 0 {
+                            spans.push((i - 1, i, lh + 2 + halves(boxw[i - 1]).1.min(lh)));
+                        }
+                        if i + 1 < n {
+                            spans.push((i, i + 1, rh + 2 + halves(boxw[i + 1]).0.min(rh)));
+                        }
                     }
-                    NoteSide::Over => out.push(Need::Span(i, j, w - 5)),
+                    NoteSide::Over => spans.push((i, j, w - 5)),
                     _ => {}
                 }
             }
             _ => {}
         }
     }
-    out
-}
-
-/// Lifeline columns: wide enough for boxes, labels and notes, with every
-/// frame border clear of every lifeline.
-fn columns(seq: &Sequence, boxw: &[i64]) -> Vec<i64> {
-    let n = seq.participants.len();
-    let mut gap: Vec<i64> = (0..n.saturating_sub(1)).map(|i| halves(boxw[i]).1 + halves(boxw[i + 1]).0 + 3).collect();
     // Narrow spans first, so a wide one only adds what is still missing,
-    // shared evenly; then give each long label one gap to sit in.
-    let mut needs = needs(seq, boxw);
-    needs.sort_by_key(|need| match *need {
-        Need::Span(lo, hi, _) => (0, hi - lo),
-        Need::Gap(..) => (1, 0),
-    });
-    for need in needs {
-        match need {
-            Need::Span(lo, hi, w) => {
-                let (missing, k) = ((w - gap[lo..hi].iter().sum::<i64>()).max(0), (hi - lo) as i64);
-                for (step, g) in gap[lo..hi].iter_mut().enumerate() {
-                    *g += missing / k + i64::from((step as i64) < missing % k);
-                }
-            }
-            // Widen the widest gap of the span: the least extra width.
-            Need::Gap(lo, hi, w) if gap[lo..hi].iter().all(|&g| g < w) => {
-                let widest = (lo..hi).rev().max_by_key(|&i| gap[i]).unwrap_or(lo);
-                gap[widest] = w;
-            }
-            Need::Gap(..) => {}
+    // shared evenly; then give each long label the widest gap of its span.
+    spans.sort_by_key(|&(lo, hi, _)| hi - lo);
+    for (lo, hi, w) in spans {
+        let (missing, k) = ((w - gap[lo..hi].iter().sum::<i64>()).max(0), (hi - lo) as i64);
+        for (step, g) in gap[lo..hi].iter_mut().enumerate() {
+            *g += missing / k + i64::from((step as i64) < missing % k);
+        }
+    }
+    for (lo, hi, w) in gaps {
+        if gap[lo..hi].iter().all(|&g| g < w) {
+            let widest = (lo..hi).rev().max_by_key(|&i| gap[i]).unwrap_or(lo);
+            gap[widest] = w;
         }
     }
     // Push lifelines apart until no frame border sits on (or next to) one:
@@ -461,57 +429,25 @@ fn boxed(p: &mut Painter, (left, top): (i64, i64), w: i64, lines: &[String], cor
     }
 }
 
-/// The row each item starts on, and the row of the footer boxes.
-fn rows(seq: &Sequence, header: i64) -> (Vec<i64>, i64) {
-    let mut rows = vec![header + 1];
-    for item in &seq.items {
-        let height = match item {
-            Item::Message(m) => m.lines.len() as i64 + 1 + i64::from(m.from == m.to),
-            Item::Note(n) => n.lines.len() as i64 + 2,
-            _ => 1,
-        };
-        rows.push(rows[rows.len() - 1] + height);
-    }
-    let footer = rows.pop().expect("starts with the first item's row") + 1;
-    (rows, footer)
-}
-
-/// Block frames, on the under layer so lifelines and messages run through.
-fn draw_frames(p: &mut Painter, rows: &[i64], frames: &[Frame]) {
-    for f in frames {
-        let (net, l, r) = (p.net(), f.left, f.right);
-        for (i, title) in &f.dividers {
-            p.line(&[(l, rows[*i]), (r, rows[*i])], net, Stroke::DOTTED, Layer::Under);
-            p.text(l + 1, rows[*i], &format!(" {title} "));
-        }
-        if let Some(bottom) = f.bottom {
-            let (top, bottom) = (rows[f.top], rows[bottom]);
-            p.line(&[(l, top), (r, top), (r, bottom), (l, bottom), (l, top)], net, Stroke::DOTTED, Layer::Under);
-            p.text(l + 1, top, &format!(" {} ", f.title));
-        }
-    }
-}
-
 /// A message's label and arrow, starting at `row`.
 fn draw_message(p: &mut Painter, m: &Message, row: i64, x: &[i64]) {
-    let (a, b, right) = (x[m.from], x[m.to], x[m.to] >= x[m.from]);
+    let (a, b, right, own) = (x[m.from], x[m.to], x[m.to] >= x[m.from], m.from == m.to);
     let (lo, hi) = (m.from.min(m.to), m.from.max(m.to));
-    let label_at = if m.from == m.to { a } else { x[label_gap(x, lo, hi, label_room(m))] };
+    // The label sits in the first gap of its span wide enough for it.
+    let gap = (lo..hi).find(|&i| x[i + 1] - x[i] >= label_room(m)).unwrap_or(lo);
+    let label_at = if own { a } else { x[gap] };
     for (k, line) in m.lines.iter().enumerate() {
         p.text(label_at + 2, row + k as i64, line);
     }
     let r = row + m.lines.len() as i64;
     let step = if right { 1 } else { -1 };
-    let (mut pts, tip) = if m.from == m.to {
-        (vec![(a, r), (a + 3, r), (a + 3, r + 1)], (a + 1, r + 1))
-    } else {
-        (vec![(a, r)], (b - step, r))
-    };
-    pts.push(if m.head == Head::Open { (if m.from == m.to { a } else { b }, tip.1) } else { tip });
+    let (mut pts, tip) =
+        if own { (vec![(a, r), (a + 3, r), (a + 3, r + 1)], (a + 1, r + 1)) } else { (vec![(a, r)], (b - step, r)) };
+    pts.push(if m.head == Head::Open { (if own { a } else { b }, tip.1) } else { tip });
     let net = p.net();
     p.line(&pts, net, Stroke::light(if m.dotted { Style::Dotted } else { Style::Solid }), Layer::Main);
     match m.head {
-        Head::Arrow => p.symbol(tip.0, tip.1, if right && m.from != m.to { '►' } else { '◄' }),
+        Head::Arrow => p.symbol(tip.0, tip.1, if right && !own { '►' } else { '◄' }),
         Head::Cross => p.symbol(tip.0, tip.1, 'x'),
         Head::Open => {}
     }
@@ -532,16 +468,38 @@ fn draw(seq: &Sequence, ascii: bool) -> String {
     if seq.participants.is_empty() {
         return String::new();
     }
-    let boxw: Vec<i64> = seq.participants.iter().map(box_width).collect();
-    let x = columns(seq, &boxw);
-    let mut p = Painter::new(ascii);
+    let boxw: Vec<i64> = seq.participants.iter().map(|p| lines_width(&p.lines) + 4).collect();
     let boxh: Vec<i64> = seq.participants.iter().map(|p| p.lines.len() as i64 + 2).collect();
-    let (rows, footer) = rows(seq, *boxh.iter().max().unwrap_or(&2));
+    let x = columns(seq, &boxw);
+    // The row each item starts on, then the footer boxes' row.
+    let mut rows = vec![boxh.iter().max().unwrap_or(&2) + 1];
+    for item in &seq.items {
+        let height = match item {
+            Item::Message(m) => m.lines.len() as i64 + 1 + i64::from(m.from == m.to),
+            Item::Note(n) => n.lines.len() as i64 + 2,
+            _ => 1,
+        };
+        rows.push(rows[rows.len() - 1] + height);
+    }
+    let footer = rows.pop().expect("starts with the first item's row") + 1;
+    let mut p = Painter::new(ascii);
     for (i, &xi) in x.iter().enumerate() {
         let net = p.net();
         p.line(&[(xi, boxh[i] - 1), (xi, footer)], net, Stroke::LIGHT, Layer::Main);
     }
-    draw_frames(&mut p, &rows, &frames(&seq.items, &x));
+    // Block frames, on the under layer so lifelines and messages run through.
+    for f in frames(&seq.items, &x) {
+        let (net, l, r) = (p.net(), f.left, f.right);
+        for (i, title) in &f.dividers {
+            p.line(&[(l, rows[*i]), (r, rows[*i])], net, Stroke::DOTTED, Layer::Under);
+            p.text(l + 1, rows[*i], &format!(" {title} "));
+        }
+        if let Some(bottom) = f.bottom {
+            let (top, bottom) = (rows[f.top], rows[bottom]);
+            p.line(&[(l, top), (r, top), (r, bottom), (l, bottom), (l, top)], net, Stroke::DOTTED, Layer::Under);
+            p.text(l + 1, top, &format!(" {} ", f.title));
+        }
+    }
     for (item, &row) in seq.items.iter().zip(&rows) {
         match item {
             Item::Message(m) => draw_message(&mut p, m, row, &x),
@@ -567,25 +525,24 @@ fn draw(seq: &Sequence, ascii: bool) -> String {
 #[must_use]
 pub fn wrap_sequence(seq: &Sequence, max: usize) -> Sequence {
     let mut s = seq.clone();
-    let wrap_all = |lines: &mut Vec<String>| *lines = lines.iter().flat_map(|l| wrap(l, max, false)).collect();
-    s.participants.iter_mut().for_each(|p| wrap_all(&mut p.lines));
+    s.participants.iter_mut().for_each(|p| wrap_all(&mut p.lines, max));
     for item in &mut s.items {
         match item {
-            Item::Message(Message { lines, .. }) | Item::Note(Note { lines, .. }) => wrap_all(lines),
+            Item::Message(Message { lines, .. }) | Item::Note(Note { lines, .. }) => wrap_all(lines, max),
             _ => {}
         }
     }
     s
 }
 
-/// Render within `max_width` columns (0 = unlimited), wrapping text at 24,
-/// then 16, then 12 columns if needed.
+/// Render within `max_width` columns (0 = unlimited), wrapping text ever
+/// narrower ([`WRAP_WIDTHS`]) if needed.
 ///
 /// # Errors
 ///
 /// A hand-built sequence that fails [`Sequence::validate`].
 pub fn render_sequence_fit(seq: &Sequence, ascii: bool, max_width: usize) -> Result<Fit, Error> {
     seq.validate()?;
-    let wrapped = [None, Some(24), Some(16), Some(12)].into_iter();
-    Ok(first_fit(max_width, wrapped.map(|w| draw(&w.map_or_else(|| seq.clone(), |w| wrap_sequence(seq, w)), ascii))))
+    let wrapped = |w: Option<usize>| w.map_or_else(|| seq.clone(), |w| wrap_sequence(seq, w));
+    Ok(first_fit(max_width, WRAP_WIDTHS.into_iter().map(|w| draw(&wrapped(w), ascii))))
 }

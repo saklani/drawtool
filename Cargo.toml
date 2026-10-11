@@ -21,9 +21,6 @@ overflow-checks = true
 lto = true
 strip = true
 
-[dev-dependencies]
-unicode-width = "0.2"
-
 [lints.clippy]
 must_use_candidate = "warn"
 missing_errors_doc = "warn"

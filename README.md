@@ -237,7 +237,7 @@ matching nodes by id: `+` added (heavy), `-` removed (dashed/dotted), `~` relabe
 A `%% stack: a b c` line draws those boxes in one column, in that order (one row in TD), and
 joins edges between neighbours with short straight arrows instead of routing them through the
 layers. Use it to hang side effects under the step that causes them, or for a pair that talks
-both ways, which would otherwise loop round the outside. Edges between boxes that aren't
+both ways, which would otherwise run back through the layers. Edges between boxes that aren't
 neighbours in the stack run in a bracket beside it. Mermaid reads the line as a comment.
 
 ```
@@ -367,7 +367,8 @@ end
 
 Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`. Other Mermaid
 shapes (`((circle))`, `{{hexagon}}`, `[/lean/]`, `>flag]`, ...) keep their label and are drawn as the
-nearest of these. Cycles (back edges are routed around the outside), self-loops and
+nearest of these. Cycles (a back edge runs back through the layers, its arrowhead at its
+source's side, as in dot), self-loops and
 `subgraph ... end` groups (nested ones are flattened) are supported. As in Mermaid, a node's last
 label wins, `:::class`, `classDef`, `style`, `linkStyle` and `click` don't change the drawing, and a
 node belongs to the innermost subgraph that mentions it.

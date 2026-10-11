@@ -236,9 +236,9 @@ fn a_stacked_two_way_pair_has_no_outer_loop() {
     let src = "flowchart LR\na --> b\na --> c\nb --> c\nc --> b";
     let looped = render(&parse(src).unwrap(), None, false);
     let stacked = render(&parse(&format!("{src}\n%% stack: b c")).unwrap(), None, false);
-    assert!(looped.lines().count() > find(&looped, "│ c").0 + 2, "unstacked, c → b loops below:\n{looped}");
+    assert!(looped.contains('◄'), "unstacked, c → b runs back into b:\n{looped}");
     assert_eq!(stacked.lines().count(), find(&stacked, "│ c").0 + 2, "nothing below c:\n{stacked}");
-    assert!(stacked.contains('▼') && stacked.contains('▲'), "\n{stacked}");
+    assert!(stacked.contains('▼') && stacked.contains('▲') && !stacked.contains('◄'), "\n{stacked}");
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn two_headed_edges_get_a_head_at_each_end() {
     let mixed = draw("flowchart LR\na <--> b\na --> c", false);
     assert_eq!(mixed.matches('◄').count(), 1, "\n{mixed}");
     assert_eq!(mixed.matches('►').count(), 2, "\n{mixed}");
-    // A back edge keeps its head into its source too.
+    // A back edge is laid out reversed (a → c) and keeps both heads.
     let back = draw("flowchart LR\na --> b --> c\nc <--> a", false);
-    assert!(back.contains("│ c │◄"), "\n{back}");
+    assert!(back.contains("│ a │◄") && back.contains("►│ c │"), "\n{back}");
 }

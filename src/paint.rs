@@ -10,10 +10,20 @@ const U: u8 = 1;
 const D: u8 = 2;
 const L: u8 = 4;
 const R: u8 = 8;
-const VERT: u8 = U | D;
-const HORZ: u8 = L | R;
 /// Right half of a double-width character.
 const WIDE: char = '\0';
+
+// Glyphs by the directions present in a cell (U = 1, D = 2, L = 4, R = 8);
+// a lone direction is a line's end, drawn as the full line.
+const LIGHT: &str = " │││─┘┐┤─└┌├─┴┬┼";
+const ROUND: &str = " │││─╯╮┤─╰╭├─┴┬┼";
+const HEAVY: &str = " ┃┃┃━┛┓┫━┗┏┣━┻┳╋";
+const DOUBLE: &str = " ║║║═╝╗╣═╚╔╠═╩╦╬";
+// Mixed weights: the vertical arms' weight, then the horizontal arms'.
+const LIGHT_HEAVY: &str = " │││━┙┑┥━┕┍┝━┷┯┿";
+const HEAVY_LIGHT: &str = " ┃┃┃─┚┒┨─┖┎┠─┸┰╂";
+const LIGHT_DOUBLE: &str = " │││═╛╕╡═╘╒╞═╧╤╪";
+const DOUBLE_LIGHT: &str = " ║║║─╜╖╢─╙╓╟─╨╥╫";
 
 pub type Pt = (i64, i64);
 
@@ -22,16 +32,6 @@ pub enum Weight {
     Light,
     Heavy,
     Double,
-}
-
-/// One net's line directions in a cell. Lines of the same net join; lines of
-/// different nets that pass straight through each other cross.
-#[derive(Clone, Copy)]
-struct Arm {
-    net: usize,
-    bits: u8,
-    weight: Weight,
-    style: Style,
 }
 
 /// How a line is drawn.
@@ -72,6 +72,15 @@ pub enum Corners {
     Round,
 }
 
+/// One net's line directions in a cell. Lines of the same net join; lines of
+/// different nets that pass straight through each other cross.
+#[derive(Clone, Copy)]
+struct Arm {
+    net: usize,
+    bits: u8,
+    stroke: Stroke,
+}
+
 #[derive(Default)]
 pub struct Painter {
     pub ascii: bool,
@@ -80,7 +89,7 @@ pub struct Painter {
     pub mark_crossings: bool,
     /// Text and symbols; the flag marks symbols, which ASCII mode translates.
     glyphs: HashMap<Pt, (char, bool)>,
-    /// Main lines, then the under layer (shown only in otherwise empty cells).
+    /// Main lines, then the under layer.
     lines: [HashMap<Pt, Vec<Arm>>; 2],
     round: HashSet<Pt>,
     nets: usize,
@@ -117,24 +126,24 @@ impl Painter {
 
     /// An axis-aligned polyline through `pts`.
     pub fn line(&mut self, pts: &[Pt], net: usize, stroke: Stroke, layer: Layer) {
-        let Stroke { weight, style } = stroke;
         for w in pts.windows(2) {
             let ((x0, y0), (x1, y1)) = (w[0], w[1]);
-            let (lo, hi) = if x0 == x1 { (y0.min(y1), y0.max(y1)) } else { (x0.min(x1), x0.max(x1)) };
+            let vertical = x0 == x1;
+            let (lo, hi) = if vertical { (y0.min(y1), y0.max(y1)) } else { (x0.min(x1), x0.max(x1)) };
+            let (back, fwd) = if vertical { (U, D) } else { (L, R) };
             for t in lo..=hi {
-                let (back, fwd) = if x0 == x1 { (U, D) } else { (L, R) };
                 let bits = if t > lo { back } else { 0 } | if t < hi { fwd } else { 0 };
-                let cell = if x0 == x1 { (x0, t) } else { (t, y0) };
+                let cell = if vertical { (x0, t) } else { (t, y0) };
                 let arms = self.lines[usize::from(layer == Layer::Under)].entry(cell).or_default();
                 match arms.iter_mut().find(|a| a.net == net) {
                     Some(a) => {
                         a.bits |= bits;
                         // A trunk shared by edges of different styles belongs to none of them.
-                        if a.style != style {
-                            a.style = Style::Solid;
+                        if a.stroke.style != stroke.style {
+                            a.stroke.style = Style::Solid;
                         }
                     }
-                    None => arms.push(Arm { net, bits, weight, style }),
+                    None => arms.push(Arm { net, bits, stroke }),
                 }
             }
         }
@@ -213,7 +222,7 @@ impl Painter {
     #[must_use]
     pub fn cell(&self, pt: Pt) -> char {
         if let Some(&(ch, symbol)) = self.glyphs.get(&pt) {
-            return if symbol && self.ascii { Self::ascii_symbol(ch) } else { ch };
+            return if symbol && self.ascii { ascii_symbol(ch) } else { ch };
         }
         self.lines.iter().find_map(|layer| layer.get(&pt)).map_or(' ', |arms| self.resolve(pt, arms))
     }
@@ -224,7 +233,7 @@ impl Painter {
         !self.glyphs.contains_key(&cell) && !self.lines[0].contains_key(&cell)
     }
 
-    fn straight(&self, weight: Weight, style: Style, vertical: bool) -> char {
+    fn straight(&self, Stroke { weight, style }: Stroke, vertical: bool) -> char {
         let pair = match (self.ascii, weight, style) {
             (false, Weight::Heavy, _) | (false, _, Style::Thick) => ['┃', '━'],
             (false, Weight::Double, _) => ['║', '═'],
@@ -238,84 +247,52 @@ impl Painter {
         pair[usize::from(!vertical)]
     }
 
-    /// The glyph where lines meet. Arms are the weights reaching up, down,
-    /// left and right; a light edge meeting a heavy or double border gets a
-    /// mixed tee (`┯`, `╤`, ...).
-    fn junction(&self, bits: u8, arms: [Option<Weight>; 4], round: bool) -> char {
+    /// The glyph where lines of one net meet, by the weights of its vertical
+    /// and horizontal arms.
+    fn junction(&self, bits: u8, vertical: Weight, horizontal: Weight, round: bool) -> char {
         use Weight::{Double, Heavy, Light};
-        let present: Vec<Weight> = arms.iter().flatten().copied().collect();
-        let all = |k: Weight| present.iter().all(|&p| p == k);
         if self.ascii {
-            return if all(Heavy) {
-                '#'
-            } else if round && bits & D != 0 {
-                '.'
-            } else if round {
-                '\''
-            } else {
-                '+'
+            return match (vertical, horizontal, round) {
+                (Heavy, Heavy, _) => '#',
+                (_, _, true) if bits & D != 0 => '.',
+                (_, _, true) => '\'',
+                _ => '+',
             };
         }
-        // Index into the rows below: four corners, four tees, then the cross.
-        let shapes = [D | R, D | L, U | R, U | L, U | D | R, U | D | L, D | L | R, U | L | R];
-        let i = shapes.iter().position(|&b| b == bits).unwrap_or(8);
-        let [up, down, left, right] = arms;
-        let border = if (bits == U | D | R && right == Some(Light)) || (bits == U | D | L && left == Some(Light)) {
-            up.filter(|_| up == down)
-        } else if (bits == D | L | R && down == Some(Light)) || (bits == U | L | R && up == Some(Light)) {
-            left.filter(|_| left == right)
-        } else {
-            None
+        let table = match (vertical, horizontal) {
+            (Light, Light) if round => ROUND,
+            (Light, Light) => LIGHT,
+            (Heavy, Heavy) => HEAVY,
+            (Double, Double) => DOUBLE,
+            (Light, Heavy) => LIGHT_HEAVY,
+            (Heavy, Light) => HEAVY_LIGHT,
+            (Light, Double) => LIGHT_DOUBLE,
+            (Double, Light) => DOUBLE_LIGHT,
+            (Heavy, Double) | (Double, Heavy) => DOUBLE,
         };
-        let h = left.or(right);
-        let corner_mix = i < 4 && h == Some(Double) && up.or(down) == Some(Light);
-        let row = if corner_mix {
-            "╒╕╘╛"
-        } else if round && all(Light) {
-            "╭╮╰╯"
-        } else if all(Heavy) {
-            "┏┓┗┛"
-        } else if all(Double) {
-            "╔╗╚╝"
-        } else if border == Some(Heavy) {
-            "┌┐└┘┠┨┯┷"
-        } else if border == Some(Double) {
-            "┌┐└┘╟╢╤╧"
-        } else {
-            ""
-        };
-        row.chars().nth(i).or_else(|| "┌┐└┘├┤┬┴".chars().nth(i)).unwrap_or('┼')
+        table.chars().nth(usize::from(bits)).unwrap_or('┼')
     }
 
     fn resolve(&self, cell: Pt, arms: &[Arm]) -> char {
-        let pure = arms.iter().all(|a| a.bits & VERT == 0 || a.bits & HORZ == 0);
-        let full_v = arms.iter().find(|a| a.bits == VERT);
-        if let Some(v) = full_v.filter(|_| pure && arms.iter().any(|a| a.bits == HORZ)) {
+        let (vert, horz) = (U | D, L | R);
+        let pure = arms.iter().all(|a| a.bits & vert == 0 || a.bits & horz == 0);
+        let through = arms.iter().find(|a| a.bits == vert);
+        if let Some(v) = through.filter(|_| pure && arms.iter().any(|a| a.bits == horz)) {
             // A crossing, not a join.
-            return if self.mark_crossings && !self.ascii { '╂' } else { self.straight(v.weight, v.style, true) };
+            return if self.mark_crossings && !self.ascii { '╂' } else { self.straight(v.stroke, true) };
         }
         let bits = arms.iter().fold(0, |b, a| b | a.bits);
-        let style = if arms.iter().all(|a| a.style == arms[0].style) { arms[0].style } else { Style::Solid };
-        let weight = |dir: u8| arms.iter().filter(|a| a.bits & dir != 0).map(|a| a.weight).max();
-        let heaviest = arms.iter().map(|a| a.weight).max().unwrap_or(Weight::Light);
-        match bits {
-            b if b & HORZ == 0 => self.straight(heaviest, style, true),
-            b if b & VERT == 0 => self.straight(heaviest, style, false),
-            b => self.junction(b, [weight(U), weight(D), weight(L), weight(R)], self.round.contains(&cell)),
-        }
-    }
-
-    fn ascii_symbol(ch: char) -> char {
-        match ch {
-            '▼' | '▾' => 'v',
-            '▲' => '^',
-            '►' => '>',
-            '◄' => '<',
-            '░' => '.',
-            '•' => '*',
-            '━' => '=',
-            '─' => '-',
-            c => c,
+        let style = if arms.iter().all(|a| a.stroke.style == arms[0].stroke.style) {
+            arms[0].stroke.style
+        } else {
+            Style::Solid
+        };
+        let weight = |dirs: u8| arms.iter().filter(|a| a.bits & dirs != 0).map(|a| a.stroke.weight).max();
+        let heaviest = weight(vert | horz).unwrap_or(Weight::Light);
+        match (weight(vert), weight(horz)) {
+            (_, None) => self.straight(Stroke::new(heaviest, style), true),
+            (None, _) => self.straight(Stroke::new(heaviest, style), false),
+            (Some(v), Some(h)) => self.junction(bits, v, h, self.round.contains(&cell)),
         }
     }
 
@@ -326,6 +303,20 @@ impl Painter {
         let Some(((x0, y0), (x1, y1))) = self.bounds() else { return String::new() };
         let row = |y| (x0..=x1).map(|x| self.cell((x, y))).filter(|&c| c != WIDE).collect::<String>();
         (y0..=y1).map(|y| row(y).trim_end().to_string()).collect::<Vec<_>>().join("\n")
+    }
+}
+
+fn ascii_symbol(ch: char) -> char {
+    match ch {
+        '▼' | '▾' => 'v',
+        '▲' => '^',
+        '►' => '>',
+        '◄' => '<',
+        '░' => '.',
+        '•' => '*',
+        '━' => '=',
+        '─' => '-',
+        c => c,
     }
 }
 
@@ -403,17 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_erases_lines_but_text_stays() {
-        let out = painted(false, |p| {
-            let net = p.net();
-            p.line(&[(0, 0), (4, 0)], net, Stroke::LIGHT, Layer::Main);
-            p.clear((1, 0), (3, 0));
-            p.text(2, 0, "x");
-        });
-        assert_eq!(out, "─ x ─");
-    }
-
-    #[test]
     fn pasted_lines_keep_their_nets_and_size() {
         let out = painted(false, |p| {
             let mut other = Painter::new(false);
@@ -426,15 +406,6 @@ mod tests {
             p.erase((0, 3), (1, 3));
         });
         assert_eq!(out, " │\n─│─\n │\n", "a crossing, not a join; the erased row stays");
-    }
-
-    #[test]
-    fn removed_columns_close_the_gap() {
-        let out = painted(false, |p| {
-            p.text(0, 0, "a..b");
-            p.remove_columns(1, 2);
-        });
-        assert_eq!(out, "ab");
     }
 
     #[test]

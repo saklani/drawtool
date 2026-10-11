@@ -92,9 +92,7 @@ fn is_screen_header(line: &str) -> bool {
     line.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("wireframe"))
 }
 
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
+// ---- Parsing ----------------------------------------------------------------
 
 struct Line<'a> {
     no: usize,
@@ -133,9 +131,7 @@ pub fn parse_wireframe(text: &str) -> Result<Wireframe, Error> {
             match word.strip_prefix("width=") {
                 Some(n) => {
                     let column = line.lead + 1 + line.text[..line.text.find(word).unwrap_or(0)].chars().count();
-                    width = n
-                        .parse::<usize>()
-                        .map_err(|_| Error::at_column(line.no, column, format!("invalid width {n:?}")))?;
+                    width = n.parse().map_err(|_| Error::at_column(line.no, column, format!("invalid width {n:?}")))?;
                 }
                 None => title.push(word),
             }
@@ -198,19 +194,16 @@ fn is_on(value: &str) -> bool {
 
 /// A single-line element. Anything unrecognised is text.
 fn leaf(text: &str) -> El {
-    match text {
-        "---" | "divider" => return El::Divider,
-        "spacer" => return El::Spacer,
-        _ => {}
-    }
     if let Some(item) = text.strip_prefix("- ") {
         let (item, right) = item.split_once('|').map_or((item, None), |(l, r)| (l, Some(r)));
         return El::Bullet(unquote(item), right.map(unquote));
     }
-    let Some((kw, rest)) = text.split_once(':') else { return El::Text(unquote(text), Align::Auto) };
-    let (kw, rest) = (kw.trim().to_ascii_lowercase(), rest.trim());
+    let (kw, rest) = text.split_once(':').map_or((text, ""), |(k, r)| (k.trim(), r.trim()));
     let text_as = |a| El::Text(unquote(rest), a);
-    match kw.as_str() {
+    let inline = |p: &str| p.split('|').map(|p| leaf(p.trim())).collect();
+    match kw.to_ascii_lowercase().as_str() {
+        "---" | "divider" => El::Divider,
+        "spacer" => El::Spacer,
         "text" => text_as(Align::Auto),
         "left" => text_as(Align::Left),
         "center" | "centre" => text_as(Align::Center),
@@ -226,27 +219,25 @@ fn leaf(text: &str) -> El {
             let (items, active) = items(rest);
             El::Tabs { items, active, nav: kw == "nav" }
         }
-        "toggle" | "checkbox" => {
+        "toggle" => {
             let (label, value) = label_value(rest);
-            if kw == "toggle" {
-                El::Toggle(label, is_on(&value))
-            } else {
-                El::Checkbox(label, is_on(&value))
-            }
+            El::Toggle(label, is_on(&value))
+        }
+        "checkbox" => {
+            let (label, value) = label_value(rest);
+            El::Checkbox(label, is_on(&value))
         }
         "radio" => {
             let (items, active) = items(rest);
             El::Radio(items, active)
         }
-        "row" => El::Row(rest.split('|').map(|p| leaf(p.trim())).collect()),
-        "col" | "column" => El::Col(rest.split('|').map(|p| leaf(p.trim())).collect()),
+        "row" => El::Row(inline(rest)),
+        "col" | "column" => El::Col(inline(rest)),
         _ => El::Text(unquote(text), Align::Auto),
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
+// ---- Rendering --------------------------------------------------------------
 
 /// Draw `s` (cut to `w`) aligned within `x..x+w`; returns the width drawn.
 fn put(p: &mut Painter, x: i64, y: i64, w: i64, s: &str, align: Align) -> i64 {
@@ -285,6 +276,21 @@ fn hanging(p: &mut Painter, (x, y): (i64, i64), w: i64, marker: &str, text: &str
 fn rule(p: &mut Painter, x: i64, y: i64, w: i64, edge: i64) {
     let net = p.net();
     p.line(&[(x - edge, y), (x + w - 1 + edge, y)], net, Stroke::LIGHT, Layer::Main);
+}
+
+/// A box `h` tall with `text` on its middle row, `inset` in from each side.
+fn boxed(
+    p: &mut Painter,
+    (x, y): (i64, i64),
+    (w, h): (i64, i64),
+    stroke: Stroke,
+    text: &str,
+    inset: i64,
+    align: Align,
+) -> i64 {
+    p.rect((x, y), (w, h), stroke, Corners::Square, Layer::Main);
+    put(p, x + inset, y + h / 2, w - 2 * inset, text, align);
+    h
 }
 
 fn draw_all(p: &mut Painter, children: &[El], (x, y): (i64, i64), w: i64, edge: i64) -> i64 {
@@ -333,27 +339,20 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
         }
         El::Input { label, value, select } => {
             let top = if label.is_empty() { 0 } else { para(p, (x, y), w, label, Align::Left) };
-            p.rect((x, y + top), (w, 3), Stroke::LIGHT, Corners::Square, Layer::Main);
-            put(p, x + 2, y + top + 1, w - 4 - if *select { 2 } else { 0 }, value, Align::Left);
+            let room = w - if *select { 2 } else { 0 };
+            boxed(p, (x, y + top), (w, 3), Stroke::LIGHT, &truncate(value, room - 4), 2, Align::Left);
             if *select {
                 p.symbol(x + w - 3, y + top + 1, '▾');
             }
             top + 3
         }
-        El::Button(label) => {
-            p.rect((x, y), (w, 3), Stroke::HEAVY, Corners::Square, Layer::Main);
-            put(p, x + 1, y + 1, w - 2, label, Align::Center);
-            3
-        }
+        El::Button(label) => boxed(p, (x, y), (w, 3), Stroke::HEAVY, label, 1, Align::Center),
         El::Image(caption) => {
-            p.rect((x, y), (w, 5), Stroke::LIGHT, Corners::Square, Layer::Main);
             for (r, c) in (1..4).flat_map(|r| (1..w - 1).map(move |c| (r, c))) {
                 p.symbol(x + c, y + r, '░');
             }
-            if !caption.is_empty() {
-                put(p, x + 1, y + 2, w - 2, &format!(" {caption} "), Align::Center);
-            }
-            5
+            let caption = if caption.is_empty() { String::new() } else { format!(" {caption} ") };
+            boxed(p, (x, y), (w, 5), Stroke::LIGHT, &caption, 1, Align::Center)
         }
         El::Card { title, children } => frame(p, title, children, (x, y), w),
         // A column fills its parent's width, so its dividers still reach the frame.
@@ -366,8 +365,7 @@ fn draw(p: &mut Painter, el: &El, (x, y): (i64, i64), w: i64, hint: Align, edge:
                 // Too many children to sit side by side: stack them instead.
                 return draw_all(p, children, (x, y), w, 0);
             }
-            let mut cx = x;
-            let mut h = 0;
+            let (mut cx, mut h) = (x, 0);
             for (i, c) in children.iter().enumerate() {
                 let i = i as i64;
                 let cw = base + i64::from(i < extra);

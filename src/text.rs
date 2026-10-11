@@ -53,6 +53,15 @@ pub fn wrap(s: &str, max: usize, split: bool) -> Vec<String> {
     }
 }
 
+/// Wrap each of `lines` at `max` columns, in place.
+pub fn wrap_all(lines: &mut Vec<String>, max: usize) {
+    *lines = lines.iter().flat_map(|l| wrap(l, max, false)).collect();
+}
+
+/// Label widths to try, in order, when a diagram is too wide for its
+/// budget; `None` leaves labels as written.
+pub const WRAP_WIDTHS: [Option<usize>; 4] = [None, Some(24), Some(16), Some(12)];
+
 /// A rendering and whether it met the column budget.
 pub struct Fit {
     pub text: String,

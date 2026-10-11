@@ -24,7 +24,9 @@ pub(crate) fn unquote(s: &str) -> String {
 
 struct Patterns {
     id: Regex,
-    connectors: Vec<(Regex, Style)>,
+    /// One per style, capturing `<`?, the label, the closing run and `>`?;
+    /// with no `>`, the closing run must be at least this long (`---`).
+    connectors: [(Regex, Style, usize); 3],
     class_suffix: Regex,
     pipe_label: Regex,
     header: Regex,
@@ -38,24 +40,11 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
     let rx = |s: &str| Regex::new(s).unwrap();
     Patterns {
         id: rx(r"^\w[\w.:$]*"),
-        // Two-headed forms (`<-->`) first, then labelled ones; a label ends at
-        // the first closing arrow, so `a -- x --- b -- y --> c` is two edges.
-        connectors: vec![
-            (rx(r"^<--\s*([^\s>-].*?)\s*-{2,}>"), Style::Solid),
-            (rx(r"^<-\.\s*([^\s.>-].*?)\s*\.+->"), Style::Dotted),
-            (rx(r"^<==\s*([^\s=>].*?)\s*={2,}>"), Style::Thick),
-            (rx(r"^<-{2,}>"), Style::Solid),
-            (rx(r"^<-\.+->"), Style::Dotted),
-            (rx(r"^<={2,}>"), Style::Thick),
-            (rx(r"^--\s*([^\s>-].*?)\s*(?:-{2,}>|-{3,})"), Style::Solid),
-            (rx(r"^-\.\s*([^\s.>-].*?)\s*\.-+>?"), Style::Dotted),
-            (rx(r"^==\s*([^\s=>].*?)\s*(?:=+>|={3,})"), Style::Thick),
-            (rx(r"^-\.+->"), Style::Dotted),
-            (rx(r"^-{2,}>"), Style::Solid),
-            (rx(r"^={2,}>"), Style::Thick),
-            (rx(r"^-\.+-"), Style::Dotted),
-            (rx(r"^-{3,}"), Style::Solid),
-            (rx(r"^={3,}"), Style::Thick),
+        // A label ends at the first closing arrow, so `a -- x --- b -- y --> c` is two edges.
+        connectors: [
+            (rx(r"^(<?)(?:--\s*([^\s>-].*?)\s*)?(-{2,})(>?)"), Style::Solid, 3),
+            (rx(r"^(<?)-\.+(?:\s*([^\s.>-].*?)\s*\.+)?(-)(>?)"), Style::Dotted, 1),
+            (rx(r"^(<?)(?:==\s*([^\s=>].*?)\s*)?(={2,})(>?)"), Style::Thick, 3),
         ],
         class_suffix: rx(r"^:::\w[\w-]*"),
         pipe_label: rx(r"^\s*\|([^|]*)\|"),
@@ -174,18 +163,17 @@ impl Parser {
         Ok((idx, pos + PATTERNS.class_suffix.find(&s[pos..]).map_or(0, |m| m.end())))
     }
 
+    /// Nodes joined by `&`.
     fn group(&mut self, s: &str, mut pos: usize) -> Result<(Vec<NodeIndex>, usize), Fail> {
         let mut ids = Vec::new();
         loop {
             let (id, p) = self.node(s, skip_ws(s, pos))?;
             ids.push(id);
-            pos = p;
-            let nxt = skip_ws(s, pos);
-            if s[nxt..].starts_with('&') {
-                pos = nxt + 1;
-            } else {
-                return Ok((ids, pos));
+            pos = skip_ws(s, p);
+            if !s[pos..].starts_with('&') {
+                return Ok((ids, p));
             }
+            pos += 1;
         }
     }
 
@@ -207,14 +195,16 @@ impl Parser {
             let (caps, style) = PATTERNS
                 .connectors
                 .iter()
-                .find_map(|(rx, st)| rx.captures(&s[pos..]).map(|c| (c, *st)))
+                .find_map(|(rx, st, min)| rx.captures(&s[pos..]).map(|c| (c, *st, *min)))
+                .filter(|(c, _, min)| if c[4].is_empty() { c[1].is_empty() && c[3].len() >= *min } else { true })
+                .map(|(c, st, _)| (c, st))
                 .ok_or_else(|| (pos, format!("expected an arrow like --> at {:?}", &s[pos..])))?;
-            let arrow = match (caps[0].starts_with('<'), caps[0].ends_with('>')) {
-                (true, _) => Arrow::Both,
-                (_, true) => Arrow::End,
+            let arrow = match (&caps[1], &caps[4]) {
+                ("<", _) => Arrow::Both,
+                (_, ">") => Arrow::End,
                 _ => Arrow::None,
             };
-            let mut text = caps.get(1).map(|m| m.as_str().to_string());
+            let mut text = caps.get(2).map(|m| m.as_str().to_string());
             pos += caps[0].len();
             if let Some(pm) = PATTERNS.pipe_label.captures(&s[pos..]) {
                 text = Some(pm[1].to_string());
@@ -254,67 +244,49 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
         let directive = |name| line.strip_prefix("%%").map(str::trim).and_then(|c| c.strip_prefix(name));
         if let Some(ids) = directive("highlight:") {
             highlight = Some((lineno + 1, crate::marks::split_ids(ids)));
-            continue;
-        }
-        if let Some(ids) = directive("stack:") {
+        } else if let Some(ids) = directive("stack:") {
             stacks.push((lineno + 1, crate::marks::split_ids(ids)));
-            continue;
-        }
-        if line.is_empty() || line.starts_with("%%") || line.starts_with('#') {
-            continue;
-        }
-        if let Some(c) = pats.subgraph.captures(line) {
+        } else if line.is_empty() || line.starts_with("%%") {
+        } else if let Some(c) = pats.subgraph.captures(line) {
             if let Some(id) = c.get(1).or_else(|| c.get(3)) {
                 group_ids.push((id.as_str().to_string(), lineno + 1));
             }
             let title = [2, 1, 3, 4].into_iter().find_map(|i| c.get(i)).map_or("", |m| m.as_str());
             groups.push(Group { title: label(title).join(" ") });
             p.open.push((groups.len() - 1, lineno + 1));
-            continue;
-        }
-        if line == "end" {
+        } else if line == "end" {
             if p.open.pop().is_none() {
                 return Err(Error::at(lineno + 1, "`end` without a matching `subgraph`"));
             }
-            continue;
-        }
-        if let Some(c) = pats.header.captures(line) {
-            if !p.open.is_empty() {
-                continue; // a subgraph's own direction isn't supported
+        } else if let Some(c) = pats.header.captures(line) {
+            // A subgraph's own direction isn't supported.
+            if p.open.is_empty() {
+                direction = match c[1].to_uppercase().as_str() {
+                    "LR" => Direction::LR,
+                    "TD" | "TB" => Direction::TD,
+                    d => return Err(Error::at(lineno + 1, format!("`{d}` isn't supported: use LR or TD"))),
+                };
             }
-            direction = match c[1].to_uppercase().as_str() {
-                "LR" => Direction::LR,
-                "TD" | "TB" => Direction::TD,
-                d => return Err(Error::at(lineno + 1, format!("`{d}` isn't supported: use LR or TD"))),
-            };
-            continue;
-        }
-        if pats.bare_header.is_match(line) {
+        } else if pats.bare_header.is_match(line) {
             direction = Direction::TD; // Mermaid's default once there is a header
-            continue;
-        }
-        // `style n1 …` declares n1, as in Mermaid; other styling is ignored.
-        if let Some(id) = line.strip_prefix("style ").and_then(|r| pats.id.find(r.trim_start())) {
+        } else if let Some(id) = line.strip_prefix("style ").and_then(|r| pats.id.find(r.trim_start())) {
+            // `style n1 …` declares n1, as in Mermaid; other styling is ignored.
             p.node_id(id.as_str());
-            continue;
+        } else if !pats.ignored.is_match(line) {
+            p.statement(line).map_err(|(at, message)| {
+                // 1-based column in the original line, counting characters.
+                let indent = raw.len() - raw.trim_start().len();
+                let column = raw[..indent].chars().count() + line[..at].chars().count() + 1;
+                Error::at_column(lineno + 1, column, message)
+            })?;
         }
-        if pats.ignored.is_match(line) {
-            continue;
-        }
-        p.statement(line).map_err(|(at, message)| {
-            // 1-based column in the original line, counting characters.
-            let indent = raw.len() - raw.trim_start().len();
-            Error::at_column(lineno + 1, raw[..indent].chars().count() + line[..at].chars().count() + 1, message)
-        })?;
     }
     if let Some(&(g, line)) = p.open.first() {
         return Err(Error::at(line, format!("`subgraph {}` is never closed with `end`", groups[g].title)));
     }
     if let Some((id, line)) = group_ids.iter().find(|(id, _)| p.index.contains_key(id)) {
-        return Err(Error::at(
-            *line,
-            format!("`{id}` is both a subgraph and a node (edges to subgraphs aren't supported)"),
-        ));
+        let message = format!("`{id}` is both a subgraph and a node (edges to subgraphs aren't supported)");
+        return Err(Error::at(*line, message));
     }
     let stacks = resolve_stacks(&p.g, &p.index, stacks)?;
     let mut graph = Graph { direction, g: p.g, groups, stacks };

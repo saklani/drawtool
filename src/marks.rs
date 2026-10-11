@@ -111,7 +111,8 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
         index.insert(n.id.clone(), g.g.add_node(removed));
     }
 
-    let old_edges: HashMap<EdgeKey, &EdgeDef> = edge_keys(before).into_iter().zip(before.g.edge_weights()).collect();
+    let old_keys = edge_keys(before);
+    let old_edges: HashMap<&EdgeKey, &EdgeDef> = old_keys.iter().zip(before.g.edge_weights()).collect();
     let new_keys = edge_keys(after);
     for (e, key) in g.g.edge_weights_mut().zip(&new_keys) {
         match old_edges.get(key) {
@@ -126,8 +127,8 @@ pub fn diff(before: &Graph, after: &Graph) -> Graph {
         }
     }
     let new_keys: HashSet<EdgeKey> = new_keys.into_iter().collect();
-    for (e, key) in before.g.edge_weights().zip(edge_keys(before)) {
-        if !new_keys.contains(&key) {
+    for (e, key) in before.g.edge_weights().zip(&old_keys) {
+        if !new_keys.contains(key) {
             let label = edge_label("-", e.label.as_deref());
             g.g.add_edge(index[&key.0], index[&key.1], EdgeDef { label, style: Style::Dotted, arrow: e.arrow });
         }

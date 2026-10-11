@@ -57,13 +57,14 @@ pub struct Options {
 /// highlighting/diffing a diagram that isn't a flowchart.
 pub fn render_source(text: &str, opts: &Options) -> Result<Fit, Error> {
     let flowchart_only = !opts.highlight.is_empty() || opts.before.is_some();
-    if flowchart_only && (is_wireframe(text) || is_sequence(text)) {
+    let (wireframe, sequence) = (is_wireframe(text), is_sequence(text));
+    if flowchart_only && (wireframe || sequence) {
         return Err(Error::new("highlighting and diffs only work on flowcharts"));
     }
-    if is_wireframe(text) {
+    if wireframe {
         return Ok(render_wireframe_fit(&parse_wireframe(text)?, opts.ascii, opts.max_width));
     }
-    if is_sequence(text) {
+    if sequence {
         return render_sequence_fit(&parse_sequence(text)?, opts.ascii, opts.max_width);
     }
     let mut graph = parse(text)?;

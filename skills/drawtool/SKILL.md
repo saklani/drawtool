@@ -46,8 +46,8 @@ For "what does this screen look like" (UI code, a component tree, a design discu
 `wireframe` from the real components and copy; several screens side by side show a flow.
 Flags: `-d TD` to override direction, `-w N` column budget
 (default 120 when run by Claude). A too-wide LR diagram gets its labels wrapped, then continues on
-the next row: a single crossing edge is drawn wrapping around, several are joined by numbered
-connectors (①). drawtool never switches to TD by itself; if it still can't
+the next row, each edge crossing the break drawn as a line wrapping around (several nest without
+crossing). drawtool never switches to TD by itself; if it still can't
 fit, it prints a `note:` on stderr. Never paste that note into the reply.
 If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --path /Users/shauryasaklani/Development/drawtool`.
@@ -67,7 +67,7 @@ Messages: `a->>b: text` (call), `b-->>a: text` (reply), `a->>a: text` (self), `a
 - Always use `flowchart LR`: it reads like a sentence and needs no scrolling.
 - If a flow is too long for one line, break it yourself at a meaningful seam (request path,
   then processing, then storage) into several short LR diagrams, each with its own heading.
-- If there is no clean seam, let drawtool wrap it into bands.
+- If there is no clean seam, let drawtool wrap it into rows.
 - TD is a mode, not a fallback: use `flowchart TD` only when the user asks for top-down.
 - Keep labels short (< 25 chars); drawtool wraps them only when it has to.
 - Use `{decision}` for branches, with edge labels on each branch (`yes`/`no`, `cache hit`/`miss`).

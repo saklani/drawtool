@@ -58,7 +58,7 @@ struct Args {
     direction: Option<Direction>,
     /// Column budget (default: $COLUMNS, else the terminal's width, else 120; 0 = unlimited).
     /// Too-wide diagrams get their labels wrapped; LR ones are then broken into
-    /// bands. The direction never changes on its own.
+    /// rows. The direction never changes on its own.
     #[arg(short = 'w', long, value_name = "N")]
     max_width: Option<usize>,
     /// Draw a path thick, e.g. --highlight req,auth,db (in a file: `%% highlight: req, auth, db`)

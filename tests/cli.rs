@@ -103,10 +103,13 @@ fn single_crossing_edge_wraps_around_like_text() {
 }
 
 #[test]
-fn several_crossing_edges_keep_connectors() {
-    let src = "flowchart LR\na --> b --> c --> d --> e\nb --> e";
-    let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, 20);
-    assert!(fitted.text.contains('①'), "\n{}", fitted.text);
+fn several_crossing_edges_wrap_as_nested_lines() {
+    let src = "flowchart LR\nreq[request] --> auth{auth ok?}\nauth -->|no| deny[401]\nauth -->|yes| p(parse body)\n\
+               auth --> log(audit log)\np --> v{valid?} -->|yes| db[(postgres)] --> ok[201]\nlog --> ok";
+    let fitted = drawtool::render_fit(&parse(src).unwrap(), drawtool::Direction::LR, 90);
+    assert!(fitted.fits, "\n{}", fitted.text);
+    assert!(fitted.text.lines().any(|l| l.starts_with("│ ┌")), "two lines wrap, one inside the other:\n{}", fitted.text);
+    assert!(!fitted.text.contains('╂'), "wrapping lines never cross:\n{}", fitted.text);
 }
 
 #[test]

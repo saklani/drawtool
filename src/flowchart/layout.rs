@@ -17,6 +17,14 @@
 //! An edge that closes a cycle is laid out reversed, as in dot: it runs
 //! forward through the layers from its target to its source, with its
 //! arrowhead drawn where it starts.
+//!
+//! A left-to-right drawing too wide for the terminal is cut into *rows*
+//! between layers, as in ELK's graph wrapping: each row after the first opens
+//! with a layer of *entries* and each row but the last closes with a layer of
+//! *exits*, dummies where an edge leaves one row and comes back in the next.
+//! Everything is laid out once; then the rows are stacked, and each exit is
+//! joined to its entry by a line that runs out past the row's end, back
+//! along a line of its own under the row, and in at the next row's start.
 
 use super::model::{Arrow, Direction, Graph, Mark, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
@@ -152,6 +160,7 @@ impl Seg {
 
 struct Lane {
     group: Option<usize>,
+    row: usize,
     first: usize,
     last: usize,
 }
@@ -282,6 +291,10 @@ struct Layout {
     edges: Vec<Edge>,
     stack_edges: Vec<StackEdge>,
     layers: Vec<Vec<usize>>,
+    /// The layer each row starts at, and the (exit, entry, style) of every
+    /// edge wrapping from one row to the next.
+    rows: Vec<usize>,
+    wraps: Vec<(usize, usize, Style)>,
     lanes: Vec<Lane>,
     lane_of: Vec<usize>,
     segs: Vec<Seg>,
@@ -292,38 +305,146 @@ struct Layout {
     /// of the channel after it.
     bstart: Vec<i64>,
     tstart: Vec<i64>,
-}
-
-/// A laid-out graph before it becomes text: what was painted, and each
-/// graph node's box (top-left, size).
-pub(crate) struct Scene {
-    pub painter: Painter,
-    pub boxes: Vec<(Pt, Pt)>,
+    /// Per row: its first and last cell across the flow.
+    row_span: Vec<(i64, i64)>,
 }
 
 /// Render a parsed graph as text. `direction` overrides the graph's own.
 #[must_use]
 pub fn render(graph: &Graph, direction: Option<Direction>) -> String {
-    scene(graph, direction).map_or_else(String::new, |s| s.painter.finish())
+    draw(graph, direction.unwrap_or(graph.direction) == Direction::TD, &[])
 }
 
-/// Lay out and paint `graph`; `None` if it has no nodes.
-pub(crate) fn scene(graph: &Graph, direction: Option<Direction>) -> Option<Scene> {
+/// Lay out and paint `graph`, cut into rows before each layer in `cuts`
+/// (layers as [`layers`] numbers them; left to right only).
+pub(crate) fn draw(graph: &Graph, td: bool, cuts: &[usize]) -> String {
     if graph.g.node_count() == 0 {
-        return None;
+        return String::new();
     }
-    let mut l = Layout::new(graph, direction.unwrap_or(graph.direction) == Direction::TD);
+    let mut l = Layout::new(graph, td, cuts);
+    l.lanes();
     l.order();
     l.sizes();
     l.place();
     l.ports();
     l.tracks();
-    Some(l.paint())
+    l.paint().finish()
+}
+
+/// Upper bounds on a left-to-right drawing's length, per layer of
+/// [`layers`], to choose where to cut it into rows without laying it out:
+/// a channel never needs more tracks than it has segments.
+pub(crate) struct Measure {
+    /// Per layer: its band, and the channel after it.
+    band: Vec<i64>,
+    chan: Vec<i64>,
+    /// Per layer: segments in the channel after it; whether a frame starts
+    /// or ends at it; whether a box in it loops back to itself.
+    segs: Vec<i64>,
+    starts: Vec<bool>,
+    ends: Vec<bool>,
+    looped: Vec<bool>,
+    /// For a cut before each layer: the lines that would wrap, and the
+    /// frames it would split.
+    wraps: Vec<usize>,
+    split: Vec<usize>,
+    /// Top to bottom: about how wide the widest layer is.
+    pub td_width: i64,
+}
+
+impl Measure {
+    pub(crate) fn layers(&self) -> usize {
+        self.band.len()
+    }
+
+    /// What cutting before layer `i` costs: one per line wrapping, three per
+    /// frame split in two.
+    pub(crate) fn cost(&self, i: usize) -> usize {
+        self.wraps[i] + 3 * self.split[i]
+    }
+
+    /// The most a row of layers `i..j` can take along the flow.
+    pub(crate) fn row(&self, i: usize, j: usize) -> i64 {
+        let frame = |on: bool| if on { FRAME } else { 0 };
+        let split = |k: usize| FRAME * self.split[k] as i64;
+        // Wrap lines' columns, the channel out of the entries, and frames reopening.
+        let start = if i == 0 {
+            frame(self.starts[0])
+        } else {
+            (2 * self.wraps[i] as i64 - 1).max(0) + 2 + self.segs[i - 1] + frame(self.starts[i]) + split(i)
+        };
+        let body = (i..j).map(|k| self.band[k]).sum::<i64>() + (i..j - 1).map(|k| self.chan[k]).sum::<i64>();
+        let end = if j < self.layers() {
+            self.chan[j - 1] + split(j) + (2 * self.wraps[j] as i64 - 1).max(0)
+        } else {
+            frame(self.ends[j - 1]) + i64::from(self.looped[j - 1])
+        };
+        start + body + end
+    }
+}
+
+/// Measure `graph` for cutting into rows (left to right) or for its width
+/// (top down).
+pub(crate) fn measure(graph: &Graph, td: bool) -> Measure {
+    let mut l = Layout::new(graph, td, &[]);
+    l.lanes();
+    l.sizes();
+    let n = l.layers.len();
+    let frames: Vec<(usize, usize, usize)> = l.frames().collect();
+    let starts: Vec<bool> = (0..n).map(|k| frames.iter().any(|f| f.1 == k)).collect();
+    let ends: Vec<bool> = (0..n).map(|k| frames.iter().any(|f| f.2 == k)).collect();
+    let segs: Vec<i64> = (0..n).map(|k| l.segs.iter().filter(|s| s.chan == k).count() as i64).collect();
+    let chan = (0..n).map(|k| {
+        let head = l.segs.iter().any(|s| s.chan == k && s.from.head);
+        let next_starts = starts.get(k + 1).copied().unwrap_or(false);
+        let frame = |on: bool| if on { FRAME } else { 0 };
+        1 + i64::from(head) + frame(ends[k]) + segs[k] + frame(next_starts) + 1
+    });
+    // Cut before layer k: one line per place the channel's segments end (by style).
+    let wraps = (0..n).map(|k| {
+        let into: HashSet<(usize, Style)> =
+            l.segs.iter().filter(|s| k > 0 && s.chan == k - 1).map(|s| (s.to.node, s.style)).collect();
+        into.len()
+    });
+    let looped = (0..n).map(|k| l.layers[k].iter().flat_map(|&v| &l.nodes[v].boxes).any(|&b| l.boxes[b].looped.is_some()));
+    // Top down: each lane packed tight, pushed clear of the lanes beside it as placement does.
+    let packed = |r: usize| {
+        let row = |lay: &Vec<usize>| {
+            let members: Vec<usize> = lay.iter().copied().filter(|&v| l.lane_of[v] == r).collect();
+            (members.iter().enumerate()).map(|(i, &v)| l.nodes[v].csize + l.space(v, members.get(i + 1))).sum::<i64>()
+        };
+        l.layers.iter().map(row).max().unwrap_or(0)
+    };
+    let margin = |lane: &Lane| FRAME * i64::from(lane.group.is_some());
+    let mut lane_end: Vec<i64> = vec![];
+    for (r, lane) in l.lanes.iter().enumerate() {
+        let start = (l.lanes.iter().zip(&lane_end))
+            .filter(|(q, _)| overlaps((q.first, q.last), (lane.first, lane.last)))
+            .map(|(q, &end)| end + 1 + l.gap + margin(q) + margin(lane))
+            .max()
+            .unwrap_or(margin(lane));
+        lane_end.push(start + packed(r) - 1);
+    }
+    let td_width = (l.lanes.iter().zip(&lane_end)).map(|(lane, &end)| end + 1 + margin(lane)).max().unwrap_or(0);
+    Measure {
+        band: (0..n).map(|k| l.band_len(k)).collect(),
+        chan: chan.collect(),
+        segs,
+        starts,
+        ends,
+        looped: looped.collect(),
+        wraps: wraps.collect(),
+        split: (0..n).map(|k| frames.iter().filter(|f| f.1 < k && k <= f.2).count()).collect(),
+        td_width,
+    }
 }
 
 impl Layout {
-    fn new(graph: &Graph, td: bool) -> Self {
-        let layer = layers(graph);
+    fn new(graph: &Graph, td: bool, cuts: &[usize]) -> Self {
+        // Each cut adds two layers: the exits closing one row, the entries opening the next.
+        let at = |l: usize| l + 2 * cuts.iter().filter(|&&c| c <= l).count();
+        let orig = layers(graph);
+        let layer: Vec<usize> = orig.iter().map(|&l| at(l)).collect();
         let defs: Vec<_> = graph.g.node_weights().collect();
         let mut boxes: Vec<Box> = (defs.iter().enumerate())
             .map(|(i, n)| Box {
@@ -365,7 +486,7 @@ impl Layout {
                 let both = d.arrow == Arrow::Both;
                 let mut path = if r { vec![t, s] } else { vec![s, t] };
                 if let Some(label) = &d.label {
-                    let mut node = Node::new(Kind::Label, nodes[path[0]].layer + 1, nodes[path[0]].group);
+                    let mut node = Node::new(Kind::Label, at(orig[path[0]] + 1), nodes[path[0]].group);
                     node.lines.clone_from(label);
                     nodes.push(node);
                     path.insert(1, nodes.len() - 1);
@@ -384,6 +505,8 @@ impl Layout {
             edges,
             stack_edges,
             layers: vec![vec![]; n_layers],
+            rows: std::iter::once(0).chain(cuts.iter().map(|&c| at(c) - 1)).collect(),
+            wraps: Vec::new(),
             lanes: Vec::new(),
             lane_of: Vec::new(),
             segs: Vec::new(),
@@ -391,6 +514,7 @@ impl Layout {
             port: HashMap::new(),
             bstart: Vec::new(),
             tstart: Vec::new(),
+            row_span: Vec::new(),
         };
         l.dummies();
         l
@@ -398,11 +522,13 @@ impl Layout {
 
     /// Dummy nodes for edges spanning several layers. Long edges of the same
     /// style into the same node share dummies, so they merge into one line as
-    /// early as possible instead of each taking its own route.
+    /// early as possible instead of each taking its own route. An edge that
+    /// crosses into another row is split there, between its exit and entry.
     fn dummies(&mut self) {
         let mut shared: HashMap<(usize, usize, Style), usize> = HashMap::new();
-        let nodes = &mut self.nodes;
-        for e in &mut self.edges {
+        let (nodes, rows) = (&mut self.nodes, &self.rows);
+        let mut parts = Vec::new();
+        for e in std::mem::take(&mut self.edges) {
             let (mut path, group) = (vec![e.path[0]], nodes[e.path[0]].group);
             for w in e.path.windows(2) {
                 let bundle = nodes[w[1]].kind == Kind::Boxes;
@@ -421,33 +547,79 @@ impl Layout {
                 }
                 path.push(w[1]);
             }
-            for w in path.windows(2) {
+            let entries = (1..path.len()).filter(|&i| rows[1..].contains(&nodes[path[i]].layer));
+            let mut from = 0;
+            for i in entries.chain([path.len()]) {
+                let (head, arrow) = (e.head && from == 0, e.arrow && i == path.len());
+                parts.push(Edge { path: path[from..i].to_vec(), style: e.style, head, arrow });
+                if let Some(&entry) = path.get(i) {
+                    let wrap = (path[i - 1], entry, e.style);
+                    if !self.wraps.contains(&wrap) {
+                        self.wraps.push(wrap);
+                    }
+                }
+                from = i;
+            }
+        }
+        for e in &parts {
+            for w in e.path.windows(2) {
                 if !nodes[w[0]].down.contains(&w[1]) {
                     nodes[w[0]].down.push(w[1]);
                     nodes[w[1]].up.push(w[0]);
                 }
             }
-            e.path = path;
         }
+        self.edges = parts;
     }
 
-    /// Lanes, then barycenter sweeps (keeping the ordering with fewest
-    /// crossings). Every subgraph is a lane, so its frame can never enclose
-    /// a stranger.
-    fn order(&mut self) {
+    /// The row layer `k` is in.
+    fn row(&self, k: usize) -> usize {
+        self.rows.iter().filter(|&&s| s <= k).count() - 1
+    }
+
+    /// The layers of row `r`.
+    fn row_layers(&self, r: usize) -> std::ops::Range<usize> {
+        self.rows[r]..self.rows.get(r + 1).copied().unwrap_or(self.layers.len())
+    }
+
+    /// The edges wrapping into row `r`, top to bottom.
+    fn wraps_into(&self, r: usize) -> Vec<(usize, usize, Style)> {
+        let mut w: Vec<_> = self.wraps.iter().copied().filter(|w| r > 0 && self.nodes[w.1].layer == self.rows[r]).collect();
+        w.sort_by_key(|w| self.nodes[w.0].pos);
+        w
+    }
+
+    /// Lanes, and each layer's nodes. Every subgraph is a lane in each row
+    /// it reaches, so its frame can never enclose a stranger.
+    fn lanes(&mut self) {
         for n in self.nodes.iter().filter(|n| n.kind == Kind::Boxes) {
-            match self.lanes.iter_mut().find(|l| l.group == n.group) {
+            let row = self.row(n.layer);
+            match self.lanes.iter_mut().find(|l| (l.group, l.row) == (n.group, row)) {
                 Some(l) => (l.first, l.last) = (l.first.min(n.layer), l.last.max(n.layer)),
-                None => self.lanes.push(Lane { group: n.group, first: n.layer, last: n.layer }),
+                None => self.lanes.push(Lane { group: n.group, row, first: n.layer, last: n.layer }),
             }
         }
         self.lanes.sort_by_key(|l| l.first);
-        let lane_of = |n: &Node| self.lanes.iter().position(|l| l.group == n.group).unwrap_or(0);
+        let lane_of = |n: &Node| {
+            let row = self.row(n.layer);
+            self.lanes.iter().position(|l| (l.group, l.row) == (n.group, row)).unwrap_or(0)
+        };
         self.lane_of = self.nodes.iter().map(lane_of).collect();
         // A stacked box's own node is empty: the stack's first node holds them all.
         let placed = |n: &Node| n.kind != Kind::Boxes || !n.boxes.is_empty();
         for (v, n) in self.nodes.iter().enumerate().filter(|(_, n)| placed(n)) {
             self.layers[n.layer].push(v);
+        }
+    }
+
+    /// Barycenter sweeps, keeping the ordering with fewest crossings. As in
+    /// ELK, an exit and its entry count as neighbours while ordering (their
+    /// layers are adjacent), so rows are ordered as one drawing; then each
+    /// row's entries take their exits' order, so wrapping lines nest.
+    fn order(&mut self) {
+        for &(x, y, _) in &self.wraps {
+            self.nodes[x].down.push(y);
+            self.nodes[y].up.push(x);
         }
         let nl = self.layers.len();
         let (mut best, mut best_c) = (self.layers.clone(), usize::MAX);
@@ -478,6 +650,17 @@ impl Layout {
             }
         }
         self.layers = best;
+        for &(x, y, _) in &self.wraps {
+            self.nodes[x].down.retain(|&v| v != y);
+            self.nodes[y].up.retain(|&v| v != x);
+        }
+        for r in 1..self.rows.len() {
+            let exits = &self.layers[self.rows[r] - 1];
+            let rank = |v: &usize| self.wraps.iter().find(|w| w.1 == *v).and_then(|w| exits.iter().position(|&x| x == w.0));
+            let mut entries = self.layers[self.rows[r]].clone();
+            entries.sort_by_key(rank);
+            self.layers[self.rows[r]] = entries;
+        }
     }
 
     /// Swap neighbours in a layer (within a lane) while that lowers the
@@ -664,8 +847,20 @@ impl Layout {
         }
         // Pushing a lane can run it into another lane's dummies in a shared layer.
         self.pack();
-        let shift = self.nodes.iter().map(|n| n.framed().0).min().unwrap();
-        self.nodes.iter_mut().for_each(|n| n.pos -= shift);
+        // Rows one under another, with a line between them per edge wrapping.
+        let mut bottom = 0;
+        for r in 0..self.rows.len() {
+            let members: Vec<usize> = self.layers[self.row_layers(r)].concat();
+            let (lo, hi) = (members.iter().map(|&v| self.nodes[v].framed()))
+                .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+                .unwrap_or((0, -1));
+            let top = if r == 0 { 0 } else { bottom + 1 + self.wraps_into(r).len().max(1) as i64 };
+            for &v in &members {
+                self.nodes[v].pos += top - lo;
+            }
+            bottom = hi + top - lo;
+            self.row_span.push((top, bottom));
+        }
     }
 
     /// Move layer `k`'s nodes toward their neighbours in the layer before
@@ -838,18 +1033,25 @@ impl Layout {
     }
 
     /// Length of layer `k` along the flow: its longest box, then its
-    /// brackets (a lane each, two cells apart) and their labels.
+    /// brackets (a lane each, two cells apart) and their labels; for a layer
+    /// of exits, the columns its wrapping lines turn down.
     fn band_len(&self, k: usize) -> i64 {
         let brackets = self.brackets(k);
         let label = |l: &Vec<String>| if self.td { 1 } else { l.iter().map(|t| width(t)).max().unwrap_or(0) + 1 };
         let labels = brackets.iter().filter_map(|e| e.label.as_ref()).map(label).max().unwrap_or(0);
-        self.box_len(k) + 2 * brackets.len() as i64 + labels
+        let exits = self.wraps.iter().filter(|w| self.nodes[w.0].layer == k).count() as i64;
+        self.box_len(k) + 2 * brackets.len() as i64 + labels + (2 * exits - 1).max(0)
     }
 
     /// Layer-axis coordinates. Channels next to a frame get FRAME extra cells.
     fn coordinates(&mut self) {
-        let mut cur = if self.frames().any(|f| f.1 == 0) { FRAME } else { 0 };
+        let mut cur = 0;
         for k in 0..self.layers.len() {
+            // A row starts at the last column its wrapping lines come down.
+            if let Some(r) = self.rows.iter().position(|&s| s == k) {
+                let lines = 2 * self.wraps_into(r).len() as i64 - 1;
+                cur = lines.max(0) + if self.frames().any(|f| f.1 == k) { FRAME } else { 0 };
+            }
             self.bstart.push(cur);
             cur += self.band_len(k);
             let segs = self.segs.iter().filter(|s| s.chan == k);
@@ -881,7 +1083,7 @@ impl Layout {
         (self.phys(l0, lo), if self.td { (w, bx.lsize) } else { (bx.lsize, w) })
     }
 
-    fn paint(mut self) -> Scene {
+    fn paint(mut self) -> Painter {
         self.coordinates();
         let mut p = Painter::new();
         p.mark_crossings = true;
@@ -980,10 +1182,12 @@ impl Layout {
             }
         }
         self.paint_stack_edges(&mut p);
+        self.paint_wraps(&mut p);
 
         // Group frames sit under everything; titles slide past crossing edges.
         for (group, lo, hi) in self.frames() {
-            let members = self.nodes.iter().filter(|n| n.group == Some(group) && n.kind == Kind::Boxes);
+            let members = (self.layers[lo..=hi].iter().flatten().map(|&v| &self.nodes[v]))
+                .filter(|n| n.group == Some(group) && n.kind == Kind::Boxes);
             let (c0, c1) = members.map(Node::framed).reduce(|(a, b), (c, d)| (a.min(c), b.max(d))).unwrap();
             let (l0, l1) = (self.bstart[lo] - FRAME, self.bstart[hi] + self.band_len(hi) - 1 + FRAME);
             let ((xa, ya), (xb, yb)) = (self.phys(l0, c0), self.phys(l1, c1));
@@ -997,8 +1201,28 @@ impl Layout {
                 p.text(x, y0, &title);
             }
         }
-        let boxes = (0..self.boxes.len()).map(|b| self.box_rect(b)).collect();
-        Scene { boxes, painter: p }
+        p
+    }
+
+    /// Edges wrapping into each row: out past the exits, down to a line of
+    /// their own under the row above, back to the row's start, and down into
+    /// their entries. The top exit runs out farthest, along the lowest line,
+    /// and in nearest to the row, so the lines nest without crossing.
+    fn paint_wraps(&self, p: &mut Painter) {
+        for r in 1..self.rows.len() {
+            let wraps = self.wraps_into(r);
+            let m = wraps.len() as i64;
+            for (i, &(exit, entry, style)) in wraps.iter().enumerate() {
+                let (out, line) = (2 * (m - 1 - i as i64), self.row_span[r].0 - 1 - i as i64);
+                let (lx, cx, cy) = (self.bstart[self.nodes[exit].layer], self.cen(exit), self.cen(entry));
+                let mut pts = vec![(lx, cx), (lx + out, cx), (lx + out, line), (out, line), (out, cy)];
+                pts.push((self.bstart[self.nodes[entry].layer] - 1, cy));
+                pts.dedup();
+                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
+                let net = p.net();
+                p.line(&pts, net, Stroke::light(style), Layer::Main);
+            }
+        }
     }
 
     /// Edges inside stacks. Between neighbours: straight across the gap, side
@@ -1097,7 +1321,7 @@ mod tests {
     #[test]
     fn break_cycles_marks_only_the_closing_edge() {
         let g = graph("a --> b\nb --> c\nc --> a\na --> d\nd --> c");
-        let l = Layout::new(&g, true);
+        let l = Layout::new(&g, true, &[]);
         let ends = |e: &Edge| (e.path[0], *e.path.last().unwrap());
         let heads: Vec<(usize, usize)> = l.edges.iter().filter(|e| e.head).map(ends).collect();
         assert_eq!(heads, [(id(&g, "a"), id(&g, "c"))], "c → a is laid out as a → c with a head at a");
@@ -1110,7 +1334,7 @@ mod tests {
         assert_eq!(layer[id(&g, "a")], layer[id(&g, "c")]);
         // Leaving the stack (a → b) and coming back (b → c) is a loop; a → c
         // is inside the stack, so it is drawn across and not counted.
-        let l = Layout::new(&g, true);
+        let l = Layout::new(&g, true, &[]);
         assert_eq!(l.edges.iter().filter(|e| e.head).count(), 1);
         assert_eq!(l.stack_edges.iter().map(|e| (e.src, e.dst)).collect::<Vec<_>>(), [(id(&g, "a"), id(&g, "c"))]);
     }
@@ -1130,7 +1354,7 @@ mod tests {
     #[test]
     fn long_edges_into_one_node_share_dummies_by_style() {
         let g = graph("a --> b\nb --> c\nc --> d\na --> d\nz --> b\nz --> d\nz -.-> d");
-        let l = Layout::new(&g, true);
+        let l = Layout::new(&g, true, &[]);
         let inner = |e: &Edge| e.path[1..e.path.len() - 1].to_vec();
         let (a_d, z_d, z_dotted) = (&l.edges[3], &l.edges[5], &l.edges[6]);
         assert_eq!(inner(a_d).len(), 2);
@@ -1143,7 +1367,7 @@ mod tests {
     fn transpose_removes_a_simple_crossing() {
         let g = graph("a --> c\nb --> d");
         let (a, b, c, d) = (id(&g, "a"), id(&g, "b"), id(&g, "c"), id(&g, "d"));
-        let mut l = Layout::new(&g, true);
+        let mut l = Layout::new(&g, true, &[]);
         l.lane_of = vec![0; l.nodes.len()];
         l.layers = vec![vec![a, b], vec![d, c]];
         assert_eq!(crossings(&l.layers, &l.nodes), 1);
@@ -1155,7 +1379,7 @@ mod tests {
     fn crossings_count_every_pair_once() {
         // Each of a's two edges crosses each of b's: four crossings.
         let g = graph("a --> d\na --> e\nb --> c\nb --> f");
-        let mut l = Layout::new(&g, true);
+        let mut l = Layout::new(&g, true, &[]);
         let n = |s| id(&g, s);
         l.layers = vec![vec![n("a"), n("b")], vec![n("c"), n("f"), n("d"), n("e")]];
         assert_eq!(crossings(&l.layers, &l.nodes), 4);

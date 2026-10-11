@@ -1,15 +1,15 @@
-//! Fit a flowchart into a column budget without changing its direction. LR
-//! first wraps long labels, then breaks into stacked bands: a single edge
-//! crossing a break wraps around like text, several are joined by numbered
-//! connectors (①). TD only ever wraps labels.
+//! Fit a flowchart into a column budget without changing its direction,
+//! deciding everything from [`measure`]'s estimates before laying it out
+//! once. Labels are wrapped no more than needed; a left-to-right diagram
+//! that is still too wide is cut into rows (see the layout module).
 
-use super::layout::{layers, render, scene, Scene};
-use super::model::{Arrow, Direction, EdgeDef, Graph, NodeDef, Shape, Style};
-use crate::paint::{Layer, Painter, Pt, Stroke};
-use crate::text::{block_width, first_fit, wrap_all, Fit, WRAP_WIDTHS};
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::EdgeRef;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use super::layout::{draw, measure, Measure};
+use super::model::{Direction, Graph};
+use crate::text::{block_width, wrap_all, Fit, WRAP_WIDTHS};
+
+/// A top-down estimate must leave this share of the budget free: placement
+/// can spread a layer wider than its boxes packed side by side.
+const TD_MARGIN_PERCENT: i64 = 15;
 
 /// Copy of `graph` with every node and edge label wrapped at `max` columns.
 #[must_use]
@@ -24,218 +24,82 @@ fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
     wrap.map_or_else(|| graph.clone(), |w| wrap_labels(graph, w))
 }
 
-/// Render within `max_width` columns (0 = unlimited), keeping `direction`.
-/// If nothing fits, returns the narrowest single-band attempt.
+/// Render within `max_width` columns (0 = unlimited), keeping `direction`:
+/// the loosest label wrapping that fits on one row; else, left to right,
+/// the loosest that can be cut into rows that each fit; else the tightest.
 #[must_use]
 pub fn render_fit(graph: &Graph, direction: Direction, max_width: usize) -> Fit {
-    let attempts = WRAP_WIDTHS.iter().map(|&w| render(&wrapped(graph, w), Some(direction)));
-    let first = first_fit(max_width, attempts);
-    if first.fits || direction == Direction::TD {
-        return first;
-    }
-    WRAP_WIDTHS.iter().find_map(|&w| fit_bands(&wrapped(graph, w), max_width)).unwrap_or(first)
-}
-
-fn connector_label(n: usize) -> String {
-    match char::from_u32(0x2460 + n as u32 - 1) {
-        Some(c) if n <= 20 => c.to_string(),
-        _ => format!("({n})"),
-    }
-}
-
-/// The edges between different bands, as (source, target) indices.
-fn crossing(graph: &Graph, band_of: &[usize]) -> Vec<(usize, usize)> {
-    let ends = graph.g.edge_references().map(|e| (e.source().index(), e.target().index()));
-    ends.filter(|&(s, t)| band_of[s] != band_of[t]).collect()
-}
-
-/// Connector number for every node that an edge from another band enters.
-fn connector_numbers(graph: &Graph, band_of: &[usize]) -> HashMap<usize, usize> {
-    let mut number = HashMap::new();
-    for (_, t) in crossing(graph, band_of) {
-        let next = number.len() + 1;
-        number.entry(t).or_insert(next);
-    }
-    number
-}
-
-/// One row of a diagram broken into bands: the sub-graph of its own nodes
-/// and edges, with a numbered connector node wherever an edge leaves or
-/// enters the band, found by its number.
-struct Band {
-    graph: Graph,
-    connectors: HashMap<usize, NodeIndex>,
-}
-
-fn band_graph(graph: &Graph, band_of: &[usize], b: usize) -> Band {
-    let number = connector_numbers(graph, band_of);
-    let (mut g, mut connectors) = (DiGraph::new(), HashMap::new());
-    let mut connector = |g: &mut DiGraph<NodeDef, EdgeDef>, n: usize| {
-        *connectors.entry(n).or_insert_with(|| {
-            // An id with a space can't be a node's, so it never collides.
-            g.add_node(NodeDef::new(&format!("connector {n}"), vec![connector_label(n)], Shape::Round))
-        })
+    let (td, budget) = (direction == Direction::TD, max_width as i64);
+    let measured = || WRAP_WIDTHS.iter().map(|&w| wrapped(graph, w)).map(|g| (measure(&g, td), g));
+    let one_row = |m: &Measure| match () {
+        () if max_width == 0 => true,
+        () if td => m.td_width * 100 <= budget * (100 - TD_MARGIN_PERCENT),
+        () => m.row(0, m.layers()) <= budget,
     };
-    // In-connectors come first, one per node entered from another band.
-    let mut entered = Vec::new();
-    for (_, t) in crossing(graph, band_of).into_iter().filter(|&(_, t)| band_of[t] == b) {
-        if !entered.iter().any(|&(_, u)| u == t) {
-            entered.push((connector(&mut g, number[&t]), t));
-        }
-    }
-    let mut index = HashMap::new();
-    for v in graph.g.node_indices().filter(|v| band_of[v.index()] == b) {
-        index.insert(v.index(), g.add_node(graph.g[v].clone()));
-    }
-    for (c, t) in entered {
-        g.add_edge(c, index[&t], EdgeDef { label: None, style: Style::Solid, arrow: Arrow::End });
-    }
-    for e in graph.g.edge_references().filter(|e| band_of[e.source().index()] == b) {
-        let t = e.target().index();
-        let dst = if band_of[t] == b { index[&t] } else { connector(&mut g, number[&t]) };
-        g.add_edge(index[&e.source().index()], dst, e.weight().clone());
-    }
-    // A stack shares one layer, so it is wholly in this band or not at all.
-    let stacks = (graph.stacks.iter())
-        .filter(|st| band_of[st[0].index()] == b)
-        .map(|st| st.iter().map(|v| index[&v.index()]).collect())
-        .collect();
-    Band { graph: Graph { direction: Direction::LR, g, groups: graph.groups.clone(), stacks }, connectors }
+    let (graph, cuts) = (measured().find(|(m, _)| one_row(m)).map(|(_, g)| (g, vec![])))
+        .or_else(|| measured().filter(|_| !td).find_map(|(m, g)| Some((g, cuts(&m, budget)?))))
+        .unwrap_or_else(|| (wrapped(graph, *WRAP_WIDTHS.last().unwrap()), vec![]));
+    let text = draw(&graph, td, &cuts);
+    let width = block_width(&text) as usize;
+    Fit { text, width, fits: max_width == 0 || width <= max_width }
 }
 
-/// Split the layers into consecutive LR bands that each fit, choosing the
-/// cuts by dynamic programming. `None` if a single layer is too wide on its own.
-fn fit_bands(graph: &Graph, max_width: usize) -> Option<Fit> {
-    let layers = layers(graph);
-    let distinct: Vec<usize> = layers.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
-    let band_of = |cuts: &[usize]| -> Vec<usize> {
-        layers.iter().map(|l| cuts.iter().filter(|&&c| distinct[c] <= *l).count() - 1).collect()
-    };
-    // Height of band [i, j) of the distinct layers, if it fits on its own.
-    let n = distinct.len();
-    let mut memo: HashMap<(usize, usize), Option<usize>> = HashMap::new();
-    let mut band_height = |i: usize, j: usize| {
-        *memo.entry((i, j)).or_insert_with(|| {
-            let cuts: Vec<usize> = [0].into_iter().chain((i > 0).then_some(i)).chain((j < n).then_some(j)).collect();
-            let text = render(&band_graph(graph, &band_of(&cuts), usize::from(i > 0)).graph, None);
-            (block_width(&text) as usize <= max_width).then(|| text.lines().count())
-        })
-    };
-    // A cut before layer p costs one per edge crossing it (so one edge wraps
-    // around like text) and three per subgraph it splits.
-    let at: Vec<usize> = layers.iter().map(|l| distinct.binary_search(l).unwrap_or(0)).collect();
-    let cut_cost = |p: usize| {
-        let before = |v: NodeIndex| at[v.index()] < p;
-        let crossing = graph.g.edge_references().filter(|e| before(e.source()) != before(e.target())).count();
-        let has = |g, side| graph.g.node_weights().zip(&at).any(|(n, &a)| n.group == Some(g) && (a < p) == side);
-        let split = (0..graph.groups.len()).filter(|&g| has(g, true) && has(g, false)).count();
-        crossing + 3 * split
-    };
-    // Fewest bands, then least height, then the cheapest cuts. best[j] is the
-    // best way to lay out layers [0, j): (bands, height, cut cost, start of last band).
-    let mut best: Vec<Option<(usize, usize, usize, usize)>> = vec![None; n + 1];
-    best[0] = Some((0, 0, 0, 0));
+/// Where to cut the layers into rows that each fit in `budget`: fewest rows,
+/// then the cheapest cuts. `None` if a layer is too wide on its own.
+fn cuts(m: &Measure, budget: i64) -> Option<Vec<usize>> {
+    let n = m.layers();
+    // best[j]: the best way to lay out layers 0..j, as (rows, cost, start of the last row).
+    let mut best: Vec<Option<(usize, usize, usize)>> = vec![None; n + 1];
+    best[0] = Some((0, 0, 0));
     for j in 1..=n {
-        for i in (0..j).rev() {
-            let Some((bands, height, cost, _)) = best[i] else { continue };
-            let Some(h) = band_height(i, j) else { break };
-            let cand = (bands + 1, height + h, cost + if i > 0 { cut_cost(i) } else { 0 }, i);
-            if best[j].is_none_or(|b| (cand.0, cand.1, cand.2) < (b.0, b.1, b.2)) {
+        for i in 0..j {
+            let Some((rows, cost, _)) = best[i] else { continue };
+            if m.row(i, j) > budget {
+                continue;
+            }
+            // Ties go to the latest start, so earlier rows fill up first, like text.
+            let cand = (rows + 1, cost + if i > 0 { m.cost(i) } else { 0 }, i);
+            if best[j].is_none_or(|b| (cand.0, cand.1) <= (b.0, b.1)) {
                 best[j] = Some(cand);
             }
         }
     }
     let (mut cuts, mut j) = (vec![], n);
     while j > 0 {
-        j = best[j]?.3;
+        j = best[j]?.2;
         cuts.push(j);
     }
+    cuts.pop(); // the first row starts at 0
     cuts.reverse();
-    if cuts.len() < 2 {
-        return None;
-    }
-    let band_of = band_of(&cuts);
-    let bands: Vec<Band> = (0..cuts.len()).map(|b| band_graph(graph, &band_of, b)).collect();
-    let scenes = bands.iter().map(|band| scene(&band.graph, None)).collect::<Option<Vec<_>>>()?;
-    let width = scenes.iter().map(|s| block_width(&s.painter.finish()) as usize).max().unwrap_or(0);
-    let text = join_bands(graph, &band_of, &bands, scenes);
-    (width <= max_width).then_some(Fit { text, width, fits: true })
+    Some(cuts)
 }
 
-/// Stack the bands, joining each break by a wrap-around line when exactly
-/// one edge crosses it and by a blank row (keeping connectors) else.
-fn join_bands(graph: &Graph, band_of: &[usize], bands: &[Band], scenes: Vec<Scene>) -> String {
-    let numbers = connector_numbers(graph, band_of);
-    let nb = bands.len();
-    let (mut outs, mut ins) = (vec![HashSet::new(); nb], vec![HashSet::new(); nb]);
-    for (s, t) in crossing(graph, band_of) {
-        outs[band_of[s]].insert(numbers[&t]);
-        ins[band_of[t]].insert(numbers[&t]);
-    }
-    // Connector `k`'s node in band `b`, as an index into the band's boxes.
-    let connector = |b: usize, k: usize| bands[b].connectors.get(&k).map(|v| v.index());
-    let mut canvas = Painter::new();
-    canvas.mark_crossings = true;
-    // The next free row, and the previous band's boxes where they sit on the canvas.
-    let (mut top, mut above): (i64, Vec<(Pt, Pt)>) = (0, vec![]);
-    for (b, scene) in scenes.into_iter().enumerate() {
-        let Some(((x0, y0), (_, y1))) = scene.painter.bounds() else { continue };
-        // The band on its own, with its top-left at (0, 0).
-        let mut band = Scene { painter: Painter::new(), boxes: scene.boxes };
-        band.painter.paste(&scene.painter, (-x0, -y0));
-        band.boxes.iter_mut().for_each(|((x, y), _)| (*x, *y) = (*x - x0, *y - y0));
-        let mut route = None;
-        if b > 0 {
-            let only = outs[b - 1].iter().next().copied().filter(|_| outs[b - 1].len() == 1 && ins[b] == outs[b - 1]);
-            let single = only
-                .filter(|k| (0..nb).all(|o| (o == b - 1 || !outs[o].contains(k)) && (o == b || !ins[o].contains(k))));
-            route = single.and_then(|k| {
-                let (from, to) = (connector(b - 1, k)?, connector(b, k)?);
-                wrap_around(&mut canvas, above[from], &mut band, to, top)
-            });
-            top += 1;
-        }
-        canvas.paste(&band.painter, (0, top));
-        if let Some(pts) = route {
-            let net = canvas.net();
-            canvas.line(&pts, net, Stroke::LIGHT, Layer::Main);
-        }
-        above = band.boxes.iter().map(|&((x, y), size)| ((x, y + top), size)).collect();
-        top += y1 - y0 + 1;
-    }
-    canvas.finish()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flowchart::parse::parse;
 
-/// Make way for one line in place of the out-connector `upper` (a box on
-/// `canvas`) and the in-connector `lower.boxes[k]` at the start of the next
-/// band: out of `upper`, down to the row `joint` below everything drawn,
-/// back left along it, and down into `lower`, which goes under that row.
-/// Erases both connectors and returns the line's points on the canvas, or
-/// `None` (changing nothing) if anything is in the way.
-fn wrap_around(canvas: &mut Painter, upper: (Pt, Pt), lower: &mut Scene, k: usize, joint: i64) -> Option<Vec<Pt>> {
-    let (((x, y), (w, h)), ((lx, ly), (lw, lh))) = (upper, lower.boxes[k]);
-    // Down from the upper label's first column; into the lower one on its label's row.
-    let (r, c, r2) = (y + 1, x + 2, ly + 1);
-    let blocked = (y + h..joint).any(|row| canvas.cell((c, row)) != ' ')
-        || (0..ly).any(|row| lower.painter.cell((0, row)) != ' ');
-    // A taller connector has edges of several styles entering it on their own ports.
-    if (h, lh) != (3, 3) || x < 1 || lx != 0 || blocked {
-        return None;
+    /// Whenever the estimates say a diagram fits (on one row, in rows, or
+    /// top down within the margin), the drawing really does.
+    #[test]
+    fn what_the_estimates_promise_holds_for_every_example() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let src = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            let Ok(graph) = parse(&src) else { continue };
+            for direction in [Direction::LR, Direction::TD] {
+                let td = direction == Direction::TD;
+                for budget in (30..=120).step_by(5) {
+                    let tight = measure(&wrapped(&graph, *WRAP_WIDTHS.last().unwrap()), td);
+                    let promised = if td {
+                        tight.td_width * 100 <= budget * (100 - TD_MARGIN_PERCENT)
+                    } else {
+                        cuts(&tight, budget).is_some()
+                    };
+                    let fit = render_fit(&graph, direction, budget as usize);
+                    assert!(!promised || fit.fits, "{direction:?} at {budget}:\n{}", fit.text);
+                }
+            }
+        }
     }
-    // Both connectors, and the arrowhead into the upper one.
-    canvas.erase((x, y), (x + w - 1, y + h - 1));
-    canvas.erase((x - 1, r), (x - 1, r));
-    lower.painter.erase((0, ly), (lw - 1, ly + lh - 1));
-    // The lower connector's columns are now just line: drop them if nothing else uses them.
-    let ((_, top), (_, bottom)) = lower.painter.bounds()?;
-    let unused = (top..=bottom).all(|row| row == r2 || (1..lw).all(|col| lower.painter.cell((col, row)) == ' '));
-    let end = if unused {
-        lower.painter.remove_columns(1, lw - 1);
-        lower.boxes.iter_mut().filter(|((x, _), _)| *x >= lw).for_each(|((x, _), _)| *x -= lw - 1);
-        1
-    } else {
-        lw
-    };
-    let below = joint + 1;
-    Some(vec![(x - 1, r), (c, r), (c, joint), (0, joint), (0, below + r2), (end, below + r2)])
 }

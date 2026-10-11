@@ -24,7 +24,7 @@ reply inside a plain ``` code block, then explain it in a few sentences.
 
 | Write | Meaning |
 |---|---|
-| `flowchart LR` / `flowchart TD` | left-to-right (preferred) / top-down |
+| `flowchart LR` / `flowchart TD` | required first line: left-to-right (preferred) / top-down |
 | `a[text]` `a(text)` `a{text}` | box / rounded (function, process) / decision (double border) |
 | `a --> b`, `a --> b --> c` | arrow, chains |
 | `a -->\|label\| b` or `a -- label --> b` | labelled edge (what data flows) |

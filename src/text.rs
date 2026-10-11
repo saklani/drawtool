@@ -83,3 +83,18 @@ pub fn first_fit(max: usize, attempts: impl IntoIterator<Item = String>) -> Fit 
     }
     best.expect("at least one attempt")
 }
+
+/// `line` without a trailing `%% comment`. A line that starts with `%%` is
+/// left alone: it is a whole-line comment or a `%% highlight:` / `%% stack:`
+/// directive.
+pub(crate) fn strip_comment(line: &str) -> &str {
+    let at = line.match_indices("%%").map(|(i, _)| i).find(|&i| i > 0 && line[..i].ends_with(char::is_whitespace));
+    at.map_or(line, |i| line[..i].trim_end())
+}
+
+/// `s` trimmed, without one pair of matching surrounding quotes (`"…"` or `'…'`).
+pub(crate) fn unquote(s: &str) -> String {
+    let s = s.trim();
+    let quoted = ['"', '\''].iter().any(|&q| s.len() >= 2 && s.starts_with(q) && s.ends_with(q));
+    if quoted { &s[1..s.len() - 1] } else { s }.to_string()
+}

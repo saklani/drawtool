@@ -1,4 +1,4 @@
-use drawtool::{is_wireframe, parse_wireframe, render_wireframe, render_wireframe_fit};
+use drawtool::{parse_wireframe, render_wireframe, render_wireframe_fit};
 use drawtool::{El, WIREFRAME_MIN_WIDTH as MIN_WIDTH, WIREFRAME_WIDTH as DEFAULT_WIDTH};
 use unicode_width::UnicodeWidthStr;
 
@@ -11,13 +11,6 @@ fn assert_rectangular(out: &str, width: usize) {
     for l in out.lines() {
         assert_eq!(l.width(), width, "line {l:?} in\n{out}");
     }
-}
-
-#[test]
-fn detects_wireframes() {
-    assert!(is_wireframe("%% hi\n\nwireframe Home\n  text: hi"));
-    assert!(is_wireframe("Wireframe"));
-    assert!(!is_wireframe("flowchart LR\na --> b"));
 }
 
 #[test]

@@ -12,8 +12,8 @@
 //! `card`, `row` and `col` place their children.
 
 use crate::paint::{Corners, Layer, Painter, Stroke};
-use crate::parse::{strip_comment, unquote};
 use crate::text::{block_width, truncate, width, wrap, Fit};
+use crate::text::{strip_comment, unquote};
 use crate::Error;
 
 /// Screen width when the header doesn't give one (`width=N`).
@@ -82,13 +82,9 @@ pub struct Wireframe {
     pub screens: Vec<Screen>,
 }
 
-/// True if the first meaningful line starts a wireframe.
+/// A line that starts a screen: `wireframe [title] [width=N]`.
 #[must_use]
-pub fn is_wireframe(text: &str) -> bool {
-    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%")).is_some_and(is_screen_header)
-}
-
-fn is_screen_header(line: &str) -> bool {
+pub(crate) fn is_screen_header(line: &str) -> bool {
     line.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("wireframe"))
 }
 

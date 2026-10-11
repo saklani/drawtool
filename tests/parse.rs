@@ -6,7 +6,7 @@ use petgraph::visit::EdgeRef;
 
 /// (style, arrowheads, label) of the single edge in `src`.
 fn edge(src: &str) -> (Style, Arrow, Option<String>) {
-    let g = parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+    let g = parse(&format!("flowchart LR\n{src}")).unwrap_or_else(|e| panic!("{src:?}: {e}"));
     assert_eq!(g.g.edge_count(), 1, "{src:?}");
     let e = &g.g[EdgeIndex::new(0)];
     (e.style, e.arrow, e.label.as_ref().map(|l| l.join("\n")))
@@ -73,7 +73,7 @@ fn every_shape() {
         ("a", Shape::Box),
     ];
     for (src, shape) in cases {
-        let g = parse(src).unwrap();
+        let g = parse(&format!("flowchart LR\n{src}")).unwrap();
         assert_eq!(g.g[NodeIndex::new(0)].shape, shape, "{src:?}");
         let label = src.trim_start_matches('a').trim_matches(|c: char| !c.is_alphanumeric());
         assert_eq!(g.g[NodeIndex::new(0)].lines, vec![if label.is_empty() { "a" } else { label }], "{src:?}");
@@ -83,14 +83,14 @@ fn every_shape() {
 #[test]
 fn labels_quotes_and_line_breaks() {
     // As in Mermaid: only double quotes are stripped and only `<br>` breaks a line.
-    let g = parse("a[\"quoted label\"]\nb[one<br/>two\\nthree]\nc['single']").unwrap();
+    let g = parse("flowchart LR\na[\"quoted label\"]\nb[one<br/>two\\nthree]\nc['single']").unwrap();
     let lines: Vec<Vec<&str>> = g.g.node_weights().map(|n| n.lines.iter().map(String::as_str).collect()).collect();
     assert_eq!(lines, vec![vec!["quoted label"], vec!["one", "two\\nthree"], vec!["'single'"]]);
 }
 
 #[test]
 fn bare_ids_are_their_own_label_and_the_last_label_wins() {
-    let g = parse("a --> b\na[First] --> c\na(Second)\na --> d").unwrap();
+    let g = parse("flowchart LR\na --> b\na[First] --> c\na(Second)\na --> d").unwrap();
     assert_eq!(g.g[NodeIndex::new(0)].lines, vec!["Second"]);
     assert_eq!(g.g[NodeIndex::new(0)].shape, Shape::Round);
     assert_eq!(g.g[NodeIndex::new(1)].lines, vec!["b"]);
@@ -99,7 +99,7 @@ fn bare_ids_are_their_own_label_and_the_last_label_wins() {
 #[test]
 fn fan_out_fan_in_and_chains() {
     let pairs = |src: &str| -> Vec<(String, String)> {
-        let g = parse(src).unwrap();
+        let g = parse(&format!("flowchart LR\n{src}")).unwrap();
         g.g.edge_references().map(|e| (g.g[e.source()].id.clone(), g.g[e.target()].id.clone())).collect()
     };
     let p = |a: &str, b: &str| (a.to_string(), b.to_string());
@@ -118,31 +118,40 @@ fn headers_comments_and_ignored_lines() {
     for (src, dir) in [
         ("flowchart TD\na", Direction::TD),
         ("graph TB\na", Direction::TD),
-        ("direction TD\na", Direction::TD),
         ("flowchart\na", Direction::TD), // Mermaid's default once there is a header
-        ("a", Direction::LR),            // no header: drawtool's own default
+        ("%% a comment first\nflowchart LR\na", Direction::LR),
     ] {
         assert_eq!(parse(src).unwrap().direction, dir, "{src:?}");
     }
-    let g = parse("%% a comment\na --> b %% trailing\nclassDef x fill:#f00\nclass a x\nb --> c;").unwrap();
+    let g =
+        parse("%% a comment\nflowchart LR\na --> b %% trailing\nclassDef x fill:#f00\nclass a x\nb --> c;").unwrap();
     assert_eq!((g.g.node_count(), g.g.edge_count()), (3, 2));
     // As in Mermaid, `style` declares the node it styles.
-    assert_eq!(parse("a --> b\nstyle c fill:#0f0").unwrap().g.node_count(), 3);
+    assert_eq!(parse("flowchart LR\na --> b\nstyle c fill:#0f0").unwrap().g.node_count(), 3);
     // A subgraph's own `direction` doesn't change the diagram's.
     assert_eq!(parse("flowchart LR\nsubgraph s\ndirection TD\na\nend").unwrap().direction, Direction::LR);
 }
 
 #[test]
+fn the_header_is_required_and_comes_once() {
+    let message = |src: &str| parse(src).unwrap_err().to_string();
+    assert!(message("a --> b").starts_with("line 1: expected a header, found `a --> b`; a flowchart starts"));
+    assert!(message("%% only a comment").contains("no diagram"));
+    assert!(message("flowchart LR\na\nflowchart TD").starts_with("line 3: a second header"));
+}
+
+#[test]
 fn errors_point_at_line_and_column() {
     let at = |src: &str| {
-        let e = parse(src).unwrap_err();
+        let e = parse(&format!("flowchart LR\n{src}")).unwrap_err();
         (e.line, e.column)
     };
-    assert_eq!(at("a --> b\n  b ~~> c"), (Some(2), Some(5)));
-    assert_eq!(at("a --> "), (Some(1), Some(6)));
-    assert_eq!(at("a[unclosed --> b"), (Some(1), Some(2)));
-    assert_eq!(at("subgraph s\na"), (Some(1), None));
-    let e = parse("x --> 数据 ~~> c").unwrap_err();
+    // Each source gets a header line first, so its lines count from 2.
+    assert_eq!(at("a --> b\n  b ~~> c"), (Some(3), Some(5)));
+    assert_eq!(at("a --> "), (Some(2), Some(6)));
+    assert_eq!(at("a[unclosed --> b"), (Some(2), Some(2)));
+    assert_eq!(at("subgraph s\na"), (Some(2), None));
+    let e = parse("flowchart LR\nx --> 数据 ~~> c").unwrap_err();
     assert_eq!(e.column, Some(10), "columns count characters, not bytes: {e}");
 }
 
@@ -151,16 +160,16 @@ fn mermaid_syntax_outside_the_subset_is_an_error() {
     let message = |src: &str| parse(src).unwrap_err().to_string();
     assert!(message("flowchart RL\na --> b").contains("`RL` isn't supported"));
     assert!(message("flowchart BT\na --> b").contains("`BT` isn't supported"));
-    assert!(message("subgraph S\nx\nend\nS --> y").contains("both a subgraph and a node"));
+    assert!(message("flowchart LR\nsubgraph S\nx\nend\nS --> y").contains("both a subgraph and a node"));
     for src in ["a->b", "a --o b", "a --x b", "a ~~~ b", "a-b --> c", "a <--- b", "a <-> b", "a o--o b"] {
-        assert!(parse(src).is_err(), "{src:?}");
+        assert!(parse(&format!("flowchart LR\n{src}")).is_err(), "{src:?}");
     }
 }
 
 #[test]
 fn the_first_subgraph_to_close_claims_a_node() {
     let group = |src: &str, id: &str| {
-        let g = parse(src).unwrap();
+        let g = parse(&format!("flowchart LR\n{src}")).unwrap();
         g.g.node_weights().find(|n| n.id == id).unwrap().group.map(|i| g.groups[i].title.clone())
     };
     let nested = "subgraph outer\na --> b\nsubgraph inner\nb\nend\nend";
@@ -173,24 +182,24 @@ fn the_first_subgraph_to_close_claims_a_node() {
 
 #[test]
 fn stack_lines_list_boxes_in_order() {
-    let g = parse("a --> b --> c\n%% stack: c, a").unwrap();
+    let g = parse("flowchart LR\na --> b --> c\n%% stack: c, a").unwrap();
     let id = |i: &NodeIndex| g.g[*i].id.clone();
     assert_eq!(g.stacks.iter().map(|st| st.iter().map(id).collect::<Vec<_>>()).collect::<Vec<_>>(), [["c", "a"]]);
     // To Mermaid it's a comment.
-    assert_eq!(parse("a --> b\n%% stack: a b").unwrap().g.edge_count(), 1);
+    assert_eq!(parse("flowchart LR\na --> b\n%% stack: a b").unwrap().g.edge_count(), 1);
 }
 
 #[test]
 fn bad_stack_lines_name_their_line() {
     let fail = |src: &str| {
-        let e = parse(src).unwrap_err();
+        let e = parse(&format!("flowchart LR\n{src}")).unwrap_err();
         (e.line, e.message)
     };
     let (line, message) = fail("a --> b\n%% stack: a zz");
-    assert!(line == Some(2) && message.contains("no node \"zz\""), "{message}");
+    assert!(line == Some(3) && message.contains("no node \"zz\""), "{message}");
     assert!(fail("a --> b\n%% stack: a").1.contains("two or more"));
     assert!(fail("a --> b\n%% stack: a b a").1.contains("already in a stack"));
     let (line, message) = fail("a --> b --> c\n%% stack: a b\n%% stack: c b");
-    assert!(line == Some(3) && message.contains("already in a stack"), "{message}");
+    assert!(line == Some(4) && message.contains("already in a stack"), "{message}");
     assert!(fail("subgraph s\na\nend\na --> b\n%% stack: a b").1.contains("same subgraph"));
 }

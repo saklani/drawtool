@@ -1,5 +1,6 @@
 use clap::Parser;
-use drawtool::{render_source, Direction, Options};
+use drawtool::{highlight, kind, parse, parse_sequence, parse_wireframe, Direction, Fit, Kind};
+use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
@@ -31,7 +32,7 @@ pair that talks both ways. Mermaid reads it as a comment.
 Shapes: [box]  (rounded)  {decision}  ([stadium])  [(database)]  [[sub]]
 Other Mermaid shapes keep their label and are drawn as the nearest of these.
 Any valid input here is valid Mermaid and means the same; RL/BT, --o, --x,
-~~~ and edges to a subgraph are rejected. A missing header means LR.
+~~~ and edges to a subgraph are rejected. The header is required.
 
 Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
   sequenceDiagram
@@ -93,12 +94,23 @@ fn read_stdin() -> Result<String, String> {
     Ok(t)
 }
 
-/// Read the diagram from stdin and render it.
-fn run(args: &Args, max_width: usize) -> Result<drawtool::Fit, Box<dyn std::error::Error>> {
+/// Read the diagram from stdin, parse it as the kind its header names, and
+/// fit it to `max_width`.
+fn run(args: &Args, max_width: usize) -> Result<Fit, Box<dyn std::error::Error>> {
     let text = read_stdin()?;
-    let highlight = args.highlight.iter().map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect();
-    let opts = Options { max_width, direction: args.direction, highlight };
-    Ok(render_source(&text, &opts)?)
+    let kind = kind(&text)?;
+    if !args.highlight.is_empty() && kind != Kind::Flowchart {
+        return Err("highlighting only works on flowcharts".into());
+    }
+    Ok(match kind {
+        Kind::Wireframe => render_wireframe_fit(&parse_wireframe(&text)?, max_width),
+        Kind::Sequence => render_sequence_fit(&parse_sequence(&text)?, max_width)?,
+        Kind::Flowchart => {
+            let mut graph = parse(&text)?;
+            highlight(&mut graph, &args.highlight)?;
+            render_fit(&graph, args.direction.unwrap_or(graph.direction), max_width)
+        }
+    })
 }
 
 fn main() -> ExitCode {

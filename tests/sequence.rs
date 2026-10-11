@@ -1,4 +1,4 @@
-use drawtool::{is_sequence, parse_sequence, render_sequence, render_sequence_fit};
+use drawtool::{parse_sequence, render_sequence, render_sequence_fit};
 use drawtool::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 use unicode_width::UnicodeWidthStr;
 
@@ -10,12 +10,6 @@ fn draw(src: &str) -> String {
 fn col(out: &str, needle: &str) -> usize {
     let line = out.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle:?} not in\n{out}"));
     line[..line.find(needle).unwrap()].width()
-}
-
-#[test]
-fn detects_sequence_diagrams() {
-    assert!(is_sequence("%% hi\n\nsequenceDiagram\na->>b: x"));
-    assert!(!is_sequence("flowchart LR\na --> b"));
 }
 
 #[test]

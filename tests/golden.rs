@@ -1,9 +1,25 @@
-//! Snapshot tests: every examples/*.mmd, fitted to 120 columns, must render
+//! Snapshot tests: every examples/*.mmd, run through `drawtool -w 120`, must print
 //! exactly as tests/golden/*.txt.
 //! Regenerate after an intentional change with: UPDATE_GOLDEN=1 cargo test
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
+
+/// What `drawtool -w 120` prints for `source`.
+fn drawtool(source: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_drawtool"))
+        .args(["-w", "120"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run drawtool");
+    child.stdin.take().unwrap().write_all(source.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "drawtool failed on\n{source}");
+    String::from_utf8(out.stdout).unwrap()
+}
 
 #[test]
 fn examples_match_golden_output() {
@@ -17,8 +33,7 @@ fn examples_match_golden_output() {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap();
-        let opts = drawtool::Options { max_width: 120, ..Default::default() };
-        let got = drawtool::render_source(&source, &opts).unwrap().text + "\n";
+        let got = drawtool(&source);
         let stem = path.file_stem().unwrap().to_str().unwrap();
         count += 1;
         let golden = root.join("tests/golden").join(format!("{stem}.txt"));

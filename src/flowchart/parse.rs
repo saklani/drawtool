@@ -1,26 +1,12 @@
 //! Parser for the Mermaid-style flowchart subset.
 
-use crate::model::{Arrow, Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
+use super::model::{Arrow, Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
+use crate::text::strip_comment;
 use crate::Error;
 use petgraph::graph::{DiGraph, NodeIndex};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
-
-/// `line` without a trailing `%% comment`. A line that starts with `%%` is
-/// left alone: it is a whole-line comment or a `%% highlight:` / `%% stack:`
-/// directive.
-pub(crate) fn strip_comment(line: &str) -> &str {
-    let at = line.match_indices("%%").map(|(i, _)| i).find(|&i| i > 0 && line[..i].ends_with(char::is_whitespace));
-    at.map_or(line, |i| line[..i].trim_end())
-}
-
-/// `s` trimmed, without one pair of matching surrounding quotes (`"…"` or `'…'`).
-pub(crate) fn unquote(s: &str) -> String {
-    let s = s.trim();
-    let quoted = ['"', '\''].iter().any(|&q| s.len() >= 2 && s.starts_with(q) && s.ends_with(q));
-    if quoted { &s[1..s.len() - 1] } else { s }.to_string()
-}
 
 struct Patterns {
     id: Regex,
@@ -30,7 +16,7 @@ struct Patterns {
     class_suffix: Regex,
     pipe_label: Regex,
     header: Regex,
-    bare_header: Regex,
+    direction: Regex,
     ignored: Regex,
     subgraph: Regex,
     br: Regex,
@@ -48,8 +34,8 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
         ],
         class_suffix: rx(r"^:::\w[\w-]*"),
         pipe_label: rx(r"^\s*\|([^|]*)\|"),
-        header: rx(r"(?i)^(?:(?:flowchart|graph)\s+|direction\s+)?(TD|TB|BT|LR|RL)$"),
-        bare_header: rx(r"(?i)^(?:flowchart|graph)$"),
+        header: rx(r"(?i)^(?:flowchart|graph)(?:\s+(\S+))?$"),
+        direction: rx(r"(?i)^direction\s+(\S+)$"),
         ignored: rx(r"^(?:classDef|class|style|linkStyle|click)\b"),
         // `subgraph id [title]`, `subgraph id`, or `subgraph any title`.
         subgraph: rx(r#"^subgraph\s+(?:(\w[\w.:$-]*)\s*\[(.*)\]|(\w[\w.:$-]*)|(.+))$"#),
@@ -76,13 +62,6 @@ const SHAPES: &[(&str, &str, Shape)] = &[
     ("(", ")", Shape::Round),
     ("{", "}", Shape::Decision),
 ];
-
-/// [`unquote`], then expand `<br>` / `\n` and split into trimmed lines.
-#[must_use]
-pub fn clean_label(text: &str) -> Vec<String> {
-    let t = PATTERNS.br.replace_all(&unquote(text), "\n").replace("\\n", "\n");
-    t.split('\n').map(|l| l.trim().to_string()).collect()
-}
 
 /// A flowchart label as Mermaid reads it: only `"…"` quotes are stripped,
 /// and only `<br>` breaks a line.
@@ -223,16 +202,29 @@ impl Parser {
     }
 }
 
-/// Parse diagram source into a graph.
+/// How a flowchart must start; said whenever its header is missing.
+const START: &str = "a flowchart starts with `flowchart LR` or `flowchart TD`";
+
+/// `LR` or `TD`/`TB`, in any case.
+fn parse_direction(d: &str, lineno: usize) -> Result<Direction, Error> {
+    match d.to_uppercase().as_str() {
+        "LR" => Ok(Direction::LR),
+        "TD" | "TB" => Ok(Direction::TD),
+        _ => Err(Error::at(lineno, format!("`{d}` isn't supported: use LR or TD"))),
+    }
+}
+
+/// Parse diagram source into a graph. The first line that isn't blank or a
+/// `%%` comment must be the header: `flowchart`/`graph`, then `LR` or `TD`.
 ///
 /// # Errors
 ///
-/// A line that isn't valid flowchart syntax, an unbalanced `subgraph`/`end`,
+/// A missing or second header, a line that isn't valid flowchart syntax, an unbalanced `subgraph`/`end`,
 /// a reversed direction (`RL`, `BT`), an edge to a subgraph, or a
 /// `%% highlight:` path that doesn't exist.
 pub fn parse(text: &str) -> Result<Graph, Error> {
     let pats = &*PATTERNS;
-    let mut direction = Direction::LR;
+    let mut direction = None;
     let mut p = Parser { g: DiGraph::new(), index: HashMap::new(), open: Vec::new() };
     let mut groups: Vec<Group> = Vec::new();
     // Subgraph ids (id, line): a node may not reuse one.
@@ -243,10 +235,19 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
         let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
         let directive = |name| line.strip_prefix("%%").map(str::trim).and_then(|c| c.strip_prefix(name));
         if let Some(ids) = directive("highlight:") {
-            highlight = Some((lineno + 1, crate::marks::split_ids(ids)));
+            let ids = super::marks::highlight_ids(ids).map_err(|e| Error::at(lineno + 1, e.message))?;
+            highlight = Some((lineno + 1, ids));
         } else if let Some(ids) = directive("stack:") {
-            stacks.push((lineno + 1, crate::marks::split_ids(ids)));
+            stacks.push((lineno + 1, super::marks::split_ids(ids)));
         } else if line.is_empty() || line.starts_with("%%") {
+        } else if let Some(c) = pats.header.captures(line) {
+            if direction.is_some() {
+                return Err(Error::at(lineno + 1, "a second header: the header goes on the first line only"));
+            }
+            // A bare `flowchart` means TD, as in Mermaid.
+            direction = Some(parse_direction(c.get(1).map_or("TD", |m| m.as_str()), lineno + 1)?);
+        } else if direction.is_none() {
+            return Err(Error::at(lineno + 1, format!("expected a header, found `{line}`; {START}")));
         } else if let Some(c) = pats.subgraph.captures(line) {
             if let Some(id) = c.get(1).or_else(|| c.get(3)) {
                 group_ids.push((id.as_str().to_string(), lineno + 1));
@@ -258,17 +259,12 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
             if p.open.pop().is_none() {
                 return Err(Error::at(lineno + 1, "`end` without a matching `subgraph`"));
             }
-        } else if let Some(c) = pats.header.captures(line) {
+        } else if let Some(c) = pats.direction.captures(line) {
             // A subgraph's own direction isn't supported.
+            let d = parse_direction(&c[1], lineno + 1)?;
             if p.open.is_empty() {
-                direction = match c[1].to_uppercase().as_str() {
-                    "LR" => Direction::LR,
-                    "TD" | "TB" => Direction::TD,
-                    d => return Err(Error::at(lineno + 1, format!("`{d}` isn't supported: use LR or TD"))),
-                };
+                direction = Some(d);
             }
-        } else if pats.bare_header.is_match(line) {
-            direction = Direction::TD; // Mermaid's default once there is a header
         } else if let Some(id) = line.strip_prefix("style ").and_then(|r| pats.id.find(r.trim_start())) {
             // `style n1 …` declares n1, as in Mermaid; other styling is ignored.
             p.node_id(id.as_str());
@@ -288,10 +284,11 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
         let message = format!("`{id}` is both a subgraph and a node (edges to subgraphs aren't supported)");
         return Err(Error::at(*line, message));
     }
+    let direction = direction.ok_or_else(|| Error::new(format!("no diagram: {START}")))?;
     let stacks = resolve_stacks(&p.g, &p.index, stacks)?;
     let mut graph = Graph { direction, g: p.g, groups, stacks };
     if let Some((lineno, ids)) = highlight {
-        crate::marks::highlight(&mut graph, &ids).map_err(|e| Error::at(lineno, e.message))?;
+        super::marks::highlight(&mut graph, &ids).map_err(|e| Error::at(lineno, e.message))?;
     }
     Ok(graph)
 }

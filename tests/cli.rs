@@ -2,19 +2,32 @@ use drawtool::{parse, render};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
 #[test]
-fn parse_error_names_the_line() {
-    let err = parse("a --> b\nb -->\n").unwrap_err();
-    assert_eq!(err.line, Some(2), "{err}");
+fn kind_comes_from_the_first_words_of_the_first_line() {
+    use drawtool::{kind, Kind};
+    assert_eq!(kind("%% hi\n\nflowchart LR\na --> b"), Ok(Kind::Flowchart));
+    assert_eq!(kind("graph"), Ok(Kind::Flowchart));
+    assert_eq!(kind("  sequenceDiagram\na->>b: x"), Ok(Kind::Sequence));
+    assert_eq!(kind("Wireframe Home width=40"), Ok(Kind::Wireframe));
+    let err = kind("\nsequence\na->>b: hi").unwrap_err();
+    assert_eq!(err.line, Some(2));
+    assert!(err.message.contains("`sequenceDiagram` or `wireframe`"), "names every kind: {err}");
+    assert!(kind("%% only a comment\n").unwrap_err().message.starts_with("no diagram"));
 }
 
 #[test]
-fn empty_input_renders_nothing() {
-    assert_eq!(render(&parse("%% nothing here\n").unwrap(), None), "");
+fn parse_error_names_the_line() {
+    let err = parse("flowchart LR\na --> b\nb -->\n").unwrap_err();
+    assert_eq!(err.line, Some(3), "{err}");
+}
+
+#[test]
+fn a_header_alone_renders_nothing() {
+    assert_eq!(render(&parse("flowchart LR\n%% nothing here\n").unwrap(), None), "");
 }
 
 #[test]
 fn wide_characters_keep_boxes_aligned() {
-    let out = render(&parse("a[数据] --> b[ok 🚀]").unwrap(), None);
+    let out = render(&parse("flowchart LR\na[数据] --> b[ok 🚀]").unwrap(), None);
     let widths: Vec<usize> = out.lines().map(unicode_width::UnicodeWidthStr::width).collect();
     // Top border, text row and bottom border of the first box are equally wide.
     assert_eq!(widths[0], widths[1], "\n{out}");
@@ -23,7 +36,7 @@ fn wide_characters_keep_boxes_aligned() {
 
 #[test]
 fn last_explicit_label_wins_as_in_mermaid() {
-    let g = parse("a[First] --> b\na[Second] --> c\na --> d").unwrap();
+    let g = parse("flowchart LR\na[First] --> b\na[Second] --> c\na --> d").unwrap();
     assert_eq!(g.g[NodeIndex::new(0)].lines, vec!["Second"]);
 }
 
@@ -76,7 +89,7 @@ fn max_width_zero_means_unlimited() {
 
 #[test]
 fn wrapping_keeps_long_words_whole() {
-    let g = drawtool::wrap_labels(&parse("a[supercalifragilistic word]").unwrap(), 8);
+    let g = drawtool::wrap_labels(&parse("flowchart LR\na[supercalifragilistic word]").unwrap(), 8);
     assert_eq!(g.g[NodeIndex::new(0)].lines, vec!["supercalifragilistic", "word"]);
 }
 
@@ -109,20 +122,24 @@ fn highlight_marks_nodes_and_thickens_edges() {
 
 #[test]
 fn highlight_rejects_unknown_nodes_and_missing_edges() {
-    let err = parse("a --> b\n%% highlight: a, zz").unwrap_err();
-    assert!(err.line == Some(2) && err.message.contains("zz"), "{err}");
-    let mut g = parse("a --> b --> c").unwrap();
+    let err = parse("flowchart LR\na --> b\n%% highlight: a, zz").unwrap_err();
+    assert!(err.line == Some(3) && err.message.contains("zz"), "{err}");
+    let err = parse("flowchart LR\na --> b\n%% highlight: a,,b").unwrap_err();
+    assert!(err.line == Some(3) && err.message.contains("empty id"), "{err}");
+    assert!(drawtool::highlight(&mut parse("flowchart LR\na --> b").unwrap(), &["a".into(), String::new()]).is_err());
+    let mut g = parse("flowchart LR\na --> b --> c").unwrap();
     assert!(drawtool::highlight(&mut g, &["a".into(), "c".into()]).unwrap_err().message.contains("no edge"));
 }
 
 #[test]
 fn subgraph_membership_and_errors() {
-    let g = parse("subgraph api [API server]\n  a --> b\n  subgraph inner\n    c\n  end\nend\nd --> a").unwrap();
+    let g = parse("flowchart LR\nsubgraph api [API server]\n  a --> b\n  subgraph inner\n    c\n  end\nend\nd --> a")
+        .unwrap();
     assert_eq!(g.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["API server", "inner"]);
     let group = |id: &str| g.g.node_weights().find(|n| n.id == id).unwrap().group;
     assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(0), Some(0), Some(1), None));
-    assert!(parse("a --> b\nend").unwrap_err().message.contains("without a matching"));
-    assert!(parse("subgraph x\na").unwrap_err().message.contains("never closed"));
+    assert!(parse("flowchart LR\na --> b\nend").unwrap_err().message.contains("without a matching"));
+    assert!(parse("flowchart LR\nsubgraph x\na").unwrap_err().message.contains("never closed"));
 }
 
 #[test]

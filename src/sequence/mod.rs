@@ -5,11 +5,11 @@
 //! its span, then `loop`/`alt`/`opt`/`par` frames are fitted around their
 //! contents, widening gaps until no frame border lands on a lifeline.
 
-use crate::model::Style;
 use crate::paint::{Corners, Layer, Painter, Stroke};
-use crate::parse::{clean_label, strip_comment};
 use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
+use crate::text::{strip_comment, unquote};
 use crate::Error;
+use crate::Style;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -122,6 +122,7 @@ struct Patterns {
     start: Regex,
     divider: Regex,
     ignored: Regex,
+    br: Regex,
 }
 
 static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
@@ -133,15 +134,15 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
         start: rx(r"^(loop|alt|opt|par|critical|break|rect|box)(?:\s+(.*))?$"),
         divider: rx(r"^(else|and|option)(?:\s+(.*))?$"),
         ignored: rx(r"(?i)^(sequenceDiagram$|autonumber\b|activate\b|deactivate\b|title\b|acc(Title|Descr)\b)"),
+        br: rx(r"(?i)<br\s*/?>"),
     }
 });
 
-/// True if the first meaningful line of `text` is `sequenceDiagram`.
-pub fn is_sequence(text: &str) -> bool {
-    text.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("%%"))
-        .is_some_and(|l| l.eq_ignore_ascii_case("sequenceDiagram"))
+/// [`unquote`], then expand `<br>` / `\n` and split into trimmed lines.
+#[must_use]
+fn clean_label(text: &str) -> Vec<String> {
+    let t = PATTERNS.br.replace_all(&unquote(text), "\n").replace("\\n", "\n");
+    t.split('\n').map(|l| l.trim().to_string()).collect()
 }
 
 /// Label text as lines; empty text means no label.

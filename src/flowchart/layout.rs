@@ -18,7 +18,7 @@
 //! forward through the layers from its target to its source, with its
 //! arrowhead drawn where it starts.
 
-use crate::model::{Arrow, Direction, Graph, Mark, Shape, Style};
+use super::model::{Arrow, Direction, Graph, Mark, Shape, Style};
 use crate::paint::{Corners, Layer, Painter, Pt, Stroke, Weight};
 use crate::text::width;
 use petgraph::visit::EdgeRef;
@@ -1084,7 +1084,7 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::parse;
+    use crate::flowchart::parse::parse;
 
     fn graph(src: &str) -> Graph {
         parse(&format!("flowchart TD\n{src}")).unwrap()

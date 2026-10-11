@@ -3,8 +3,8 @@
 //! crossing a break wraps around like text, several are joined by numbered
 //! connectors (①). TD only ever wraps labels.
 
-use crate::layout::{layers, render, scene, Scene};
-use crate::model::{Arrow, Direction, EdgeDef, Graph, NodeDef, Shape, Style};
+use super::layout::{layers, render, scene, Scene};
+use super::model::{Arrow, Direction, EdgeDef, Graph, NodeDef, Shape, Style};
 use crate::paint::{Layer, Painter, Pt, Stroke};
 use crate::text::{block_width, first_fit, wrap_all, Fit, WRAP_WIDTHS};
 use petgraph::graph::{DiGraph, NodeIndex};

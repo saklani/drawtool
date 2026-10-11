@@ -38,6 +38,22 @@ fn empty_stdin_is_an_error() {
 }
 
 #[test]
+fn input_without_a_header_is_an_error() {
+    let out = drawtool(&[], "a --> b\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("expected a header"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_highlight_list_with_an_empty_id_is_an_error() {
+    let out = drawtool(&["--highlight", "a,,b"], "flowchart LR\na --> b\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("empty id"), "{}", stderr(&out));
+    let out = drawtool(&["--highlight", "a, b"], "flowchart LR\na --> b\n");
+    assert!(stderr(&out).contains("no node \" b\""), "ids aren't trimmed: {}", stderr(&out));
+}
+
+#[test]
 fn a_file_argument_is_rejected() {
     assert_eq!(drawtool(&["diagram.mmd"], "a --> b").status.code(), Some(2));
 }

@@ -58,7 +58,8 @@ struct Node {
     csize: i64,
     lsize: i64,
     /// A self-loop (its style, and whether it has an arrowhead), drawn as a
-    /// hook in one cell of padding on the far side of the box.
+    /// loop out of the box's flow side near its far end, around that corner
+    /// through one cell of padding, and back into the far side.
     looped: Option<(Style, bool)>,
 }
 
@@ -763,9 +764,11 @@ impl Layout<Ordered> {
             let (w, h) = match nd.kind {
                 Kind::Dummy => (1, 0),
                 Kind::Label => (textw, nlines),
-                // A TD self-loop needs two rows inside the box to hook between.
-                Kind::Real if self.td => ((textw + 4).max(2 * np + 1), nlines + 2 + i64::from(nd.looped.is_some())),
-                Kind::Real => ((textw + 4).max(2 * np + 1), (nlines + 2).max(2 * np + 1)),
+                // A self-loop leaves by its own cell, past the ports.
+                Kind::Real if self.td => ((textw + 4).max(2 * np + 1) + i64::from(nd.looped.is_some()), nlines + 2),
+                Kind::Real => {
+                    ((textw + 4).max(2 * np + 1), (nlines + 2).max(2 * np + 1) + i64::from(nd.looped.is_some()))
+                }
             };
             (nd.csize, nd.lsize) = if self.td || nd.kind == Kind::Dummy { (w, h) } else { (h, w) };
             (nd.csize, nd.lsize) = (nd.csize.max(across), nd.lsize.max(along));
@@ -890,6 +893,7 @@ impl Layout<Placed> {
             // Brackets between stacked boxes meet the far side off-centre.
             let mut taken: Vec<i64> = vec![];
             if side == Side::Out {
+                taken.extend(nd.looped.map(|_| hi));
                 for e in self.stack_edges.iter().filter(|e| (e.src == n || e.dst == n) && self.bracket(e)) {
                     taken.push(self.bracket_at(n, self.ends(e).0 == n));
                 }
@@ -1129,19 +1133,17 @@ impl Layout<Routed> {
                     p.rect((x, y), (w, h), Stroke::new(weight, style), corners, Layer::Main);
                 }
                 if let Some((style, arrow)) = nd.looped {
-                    // A hook on the far side: out of the box near its end,
-                    // back along the side, and in again with an arrowhead.
-                    let (cend, a) = (nd.pos + nd.box_csize() - 1, l0 + nd.lsize - 2);
-                    let b = if self.td { a - 1 } else { (a - 4).max(l0 + 1) };
-                    let mut pts = vec![(a, cend), (a, cend + 1), (b, cend + 1)];
-                    if !arrow {
-                        pts.push((b, cend));
-                    }
+                    // Out of the flow side by the last cell before the far
+                    // corner, around that corner, and into the far side.
+                    let (lend, cend) = (l0 + nd.lsize - 1, nd.pos + nd.box_csize() - 1);
+                    let back = (lend - 2).max(l0 + 1);
+                    let pts =
+                        [(lend, cend - 1), (lend + 1, cend - 1), (lend + 1, cend + 1), (back, cend + 1), (back, cend)];
                     let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
                     let net = p.net();
                     p.line(&pts, net, Stroke::light(style), Layer::Main);
                     if arrow {
-                        p.symbol(pts[2].0, pts[2].1, if self.td { '◄' } else { '▲' });
+                        p.symbol(pts[4].0, pts[4].1, if self.td { '◄' } else { '▲' });
                     }
                 }
             }

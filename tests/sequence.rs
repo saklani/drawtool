@@ -107,8 +107,10 @@ fn wide_characters_keep_lifelines_aligned() {
 #[test]
 fn errors_name_the_line() {
     assert_eq!(sequence("sequenceDiagram\na->>b: ok\nnonsense here").unwrap_err().line, Some(3));
-    assert_eq!(sequence("sequenceDiagram\nloop x\na->>b: y").unwrap_err().line, Some(3), "expects `end`");
-    assert_eq!(sequence("sequenceDiagram\nend").unwrap_err().line, Some(2));
+    let e = sequence("sequenceDiagram\nalt x\na->>b: y\nloop z\na->>b: w\nend").unwrap_err();
+    assert_eq!((e.line, e.message.as_str()), (Some(2), "`alt` is never closed with `end`"), "the innermost open block");
+    let e = sequence("sequenceDiagram\nend").unwrap_err();
+    assert_eq!((e.line, e.message.as_str()), (Some(2), "`end` without an open block"));
     assert_eq!(sequence("sequenceDiagram\nelse x").unwrap_err().line, Some(2));
 }
 

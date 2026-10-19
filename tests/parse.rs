@@ -153,7 +153,10 @@ fn errors_point_at_line_and_column() {
     assert_eq!(at("a --> "), (Some(2), Some(6)), "an expected node goes where the text ends");
     assert_eq!(at("a --> b\nb -->\n\n"), (Some(3), Some(6)), "not on a trailing blank line");
     assert_eq!(at("a[unclosed --> b"), (Some(2), Some(2)));
-    assert_eq!(at("subgraph s\na"), (Some(3), Some(2)));
+    let e = graph("flowchart LR\nsubgraph s [S]\na").unwrap_err();
+    assert_eq!((e.line, e.message.as_str()), (Some(2), "`subgraph` is never closed with `end`"));
+    let e = graph("flowchart LR\nloop --> b\nc -->").unwrap_err();
+    assert_eq!(e.line, Some(3), "a node called `loop` opens no block: {e}");
     let e = graph("flowchart LR\nx --> 数据 ~~> c").unwrap_err();
     assert_eq!(e.column, Some(10), "columns count characters, not bytes: {e}");
 }

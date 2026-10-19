@@ -32,4 +32,6 @@ fn choices_notes_and_composites() {
 fn mermaid_errors_point_at_the_line() {
     let e = graph("stateDiagram-v2\nA --> B\nA -->").unwrap_err();
     assert_eq!(e.line, Some(3), "{e}");
+    let e = graph("stateDiagram-v2\nstate Running {\n[*] --> A").unwrap_err();
+    assert_eq!((e.line, e.message.as_str()), (Some(2), "`state` is never closed with `}`"));
 }

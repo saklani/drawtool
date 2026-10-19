@@ -152,7 +152,7 @@ fn subgraph_membership_and_errors() {
     let group = |id: &str| g.g.node_weights().find(|n| n.id == id).unwrap().group;
     assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(1), Some(1), Some(0), None));
     assert_eq!(graph("flowchart LR\na --> b\nend").unwrap_err().line, Some(3));
-    assert!(graph("flowchart LR\nsubgraph x\na").unwrap_err().message.contains("expected \"end\""));
+    assert!(graph("flowchart LR\nsubgraph x\na").unwrap_err().message.contains("never closed"));
 }
 
 #[test]

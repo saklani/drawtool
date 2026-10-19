@@ -1,9 +1,11 @@
-use drawtool::{parse_wireframe, render_wireframe, render_wireframe_fit};
+mod common;
+use common::wireframe;
+use drawtool::{render_wireframe, render_wireframe_fit};
 use drawtool::{El, WIREFRAME_MIN_WIDTH as MIN_WIDTH, WIREFRAME_WIDTH as DEFAULT_WIDTH};
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {
-    render_wireframe(&parse_wireframe(src).unwrap())
+    render_wireframe(&wireframe(src).unwrap())
 }
 
 /// Every line of a single screen is exactly as wide as the screen.
@@ -15,7 +17,7 @@ fn assert_rectangular(out: &str, width: usize) {
 
 #[test]
 fn parses_containers_and_leaves() {
-    let wf = parse_wireframe(
+    let wf = wireframe(
         "wireframe Pay width=50\n  card Total:\n    center: $20\n    row: [ A ] | [ B ]\n  row:\n    text: left\n    text: right\n  - item | 1\n  button: Go",
     )
     .unwrap();
@@ -36,7 +38,7 @@ fn parses_containers_and_leaves() {
 
 #[test]
 fn unknown_keywords_are_text() {
-    let wf = parse_wireframe("wireframe\n  Total: $20").unwrap();
+    let wf = wireframe("wireframe\n  Total: $20").unwrap();
     assert!(matches!(&wf.screens[0].children[0], El::Text(t, _) if t == "Total: $20"));
 }
 
@@ -92,7 +94,7 @@ fn wide_characters_stay_aligned() {
 
 #[test]
 fn screens_sit_side_by_side_and_wrap_to_the_budget() {
-    let wf = parse_wireframe("wireframe A\n  text: a\nwireframe B\n  text: b").unwrap();
+    let wf = wireframe("wireframe A\n  text: a\nwireframe B\n  text: b").unwrap();
     let wide = render_wireframe_fit(&wf, 120);
     assert!(wide.fits && wide.text.lines().next().unwrap().contains("┌─ B"), "\n{}", wide.text);
     let narrow = render_wireframe_fit(&wf, 50);
@@ -103,9 +105,9 @@ fn screens_sit_side_by_side_and_wrap_to_the_budget() {
 
 #[test]
 fn errors_name_the_line() {
-    assert_eq!(parse_wireframe("wireframe\n  text: a\n    text: b").unwrap_err().line, Some(3));
-    assert_eq!(parse_wireframe("text: a").unwrap_err().line, Some(1));
-    assert!(parse_wireframe("wireframe x width=abc").unwrap_err().message.contains("invalid width"));
+    assert_eq!(wireframe("wireframe\n  text: a\n    text: b").unwrap_err().line, Some(3));
+    assert!(wireframe("text: a").unwrap_err().message.starts_with("no diagram"), "no `wireframe` header");
+    assert!(wireframe("wireframe x width=abc").unwrap_err().message.contains("invalid width"));
 }
 
 /// The single line of `out` containing `needle`.
@@ -187,7 +189,7 @@ fn radio_options_wrap_when_they_dont_fit_on_one_line() {
 #[test]
 fn errors_point_at_the_line_and_column() {
     let at = |src: &str| {
-        let e = parse_wireframe(src).unwrap_err();
+        let e = wireframe(src).unwrap_err();
         (e.line, e.column, e.message)
     };
     let (line, column, message) = at("wireframe\n    card A:\n        text: x\n      text: y");

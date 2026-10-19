@@ -1,6 +1,8 @@
 //! Highlighting a path.
 
-use drawtool::{highlight, parse, EdgeDef, Graph, Mark, Style};
+mod common;
+use common::graph;
+use drawtool::{highlight, EdgeDef, Graph, Mark, Style};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
@@ -17,14 +19,14 @@ fn edges(g: &Graph) -> Vec<(String, String, Style, Option<String>)> {
 
 #[test]
 fn highlight_marks_the_path_and_reports_bad_paths() {
-    let mut g = parse("flowchart LR\na --> b\nc --> b\nb -.-> d").unwrap();
+    let mut g = graph("flowchart LR\na --> b\nc --> b\nb -.-> d").unwrap();
     highlight(&mut g, &["a".into(), "b".into(), "c".into()]).unwrap();
     let marks: Vec<_> = ["a", "b", "c", "d"].iter().map(|id| node(&g, id).mark).collect();
     assert_eq!(marks, vec![Mark::Highlight, Mark::Highlight, Mark::Highlight, Mark::None]);
     let styles: Vec<_> = edges(&g).into_iter().map(|e| e.2).collect();
     assert_eq!(styles, vec![Style::Thick, Style::Thick, Style::Dotted], "edges are thickened in either direction");
 
-    let mut g = parse("flowchart LR\na --> b\nc").unwrap();
+    let mut g = graph("flowchart LR\na --> b\nc").unwrap();
     assert!(highlight(&mut g, &["a".into(), "nope".into()]).unwrap_err().message.contains("no node \"nope\""));
     assert!(highlight(&mut g, &["a".into(), "c".into()]).unwrap_err().message.contains("no edge"));
 }

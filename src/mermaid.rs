@@ -17,8 +17,11 @@ pub(crate) fn parse(text: &str) -> Result<RenderSemanticModel, Error> {
     let parsed = Engine::new().parse_diagram_for_render_model_sync(text, ParseOptions::strict());
     match parsed {
         Ok(Some(p)) => Ok(p.into_parts().1),
-        Ok(None) | Err(merman_core::Error::DetectType(_)) => {
-            Err(Error::new("no diagram: the first line names it, like `flowchart LR`"))
+        Ok(None) | Err(merman_core::Error::DetectType(_)) => Err(Error::new(
+            "no diagram: the first line names it: `flowchart LR`, `stateDiagram-v2`, `sequenceDiagram` or `wireframe`",
+        )),
+        Err(merman_core::Error::UnsupportedDiagram { diagram_type }) => {
+            Err(Error::new(format!("drawtool doesn't draw `{diagram_type}` diagrams yet")))
         }
         Err(merman_core::Error::DiagramParse { diagnostic: d, .. }) => {
             // "Expected …" at the very end points past trailing blank lines: put it after the last text.

@@ -9,7 +9,7 @@ use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
 use crate::Error;
 use crate::Style;
-use merman_core::RenderSemanticModel;
+use merman_core::diagrams::sequence::SequenceDiagramRenderModel;
 
 #[derive(Clone, Debug)]
 pub struct Participant {
@@ -68,7 +68,7 @@ pub struct Sequence {
 }
 
 impl Sequence {
-    /// Check what [`parse_sequence`] guarantees, for a sequence built by hand.
+    /// Check what [`parse`] guarantees, for a sequence built by hand.
     ///
     /// # Errors
     ///
@@ -128,15 +128,8 @@ fn text_lines(text: &str) -> Vec<String> {
     }
 }
 
-/// Parse a Mermaid `sequenceDiagram`.
-///
-/// # Errors
-///
-/// What Mermaid rejects, at the line and column it names.
-pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
-    let RenderSemanticModel::Sequence(m) = crate::mermaid::parse(text)? else {
-        return Err(Error::new("not a sequence diagram: start with `sequenceDiagram`"));
-    };
+/// A Mermaid `sequenceDiagram` as a sequence.
+pub(crate) fn sequence(m: &SequenceDiagramRenderModel) -> Sequence {
     let participants: Vec<Participant> = m
         .actor_order
         .iter()
@@ -179,7 +172,7 @@ pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
         };
         items.push(item);
     }
-    Ok(Sequence { participants, items })
+    Sequence { participants, items }
 }
 
 // ---- Layout -----------------------------------------------------------------

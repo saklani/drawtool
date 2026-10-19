@@ -1,5 +1,7 @@
 //! The syntax examples in `--help` must be valid diagrams.
 
+mod common;
+
 use std::process::Command;
 
 /// The indented example lines of the `--help` section starting with
@@ -16,11 +18,11 @@ fn help_examples_parse() {
     let help = String::from_utf8(out.stdout).unwrap();
 
     let flowchart = examples(&help, "Syntax (a subset");
-    let graph = drawtool::parse(&flowchart).unwrap_or_else(|e| panic!("{e}\n{flowchart}"));
+    let graph = common::graph(&flowchart).unwrap_or_else(|e| panic!("{e}\n{flowchart}"));
     assert_eq!(graph.groups[0].title, "API server");
 
     let sequence = examples(&help, "Sequence diagrams");
-    let seq = drawtool::parse_sequence(&sequence).unwrap_or_else(|e| panic!("{e}\n{sequence}"));
+    let seq = common::sequence(&sequence).unwrap_or_else(|e| panic!("{e}\n{sequence}"));
     let api = seq.participants.iter().find(|p| p.id == "api").unwrap();
     assert_eq!(api.lines, vec!["API server"], "trailing %% comments are not part of the text");
 }

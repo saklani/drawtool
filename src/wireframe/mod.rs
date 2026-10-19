@@ -105,7 +105,7 @@ struct Line<'a> {
 ///
 /// Input that doesn't start with `wireframe`, a bad `width=`, or indentation
 /// under an element that can't have children.
-pub fn parse_wireframe(text: &str) -> Result<Wireframe, Error> {
+pub(crate) fn parse_wireframe(text: &str) -> Result<Wireframe, Error> {
     let lines: Vec<Line> = text
         .lines()
         .enumerate()

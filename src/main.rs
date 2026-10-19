@@ -1,5 +1,5 @@
 use clap::Parser;
-use drawtool::{highlight, kind, parse, parse_sequence, parse_state, parse_wireframe, Direction, Fit, Kind};
+use drawtool::{highlight, parse, Diagram, Direction, Fit};
 use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
@@ -97,19 +97,16 @@ fn read_stdin() -> Result<String, String> {
     Ok(t)
 }
 
-/// Read the diagram from stdin, parse it as the kind its header names, and
-/// fit it to `max_width`.
+/// Read the diagram from stdin, parse it, and fit it to `max_width`.
 fn run(args: &Args, max_width: usize) -> Result<Fit, Box<dyn std::error::Error>> {
-    let text = read_stdin()?;
-    let kind = kind(&text)?;
-    if !args.highlight.is_empty() && !matches!(kind, Kind::Flowchart | Kind::State) {
+    let diagram = parse(&read_stdin()?)?;
+    if !args.highlight.is_empty() && !matches!(diagram, Diagram::Flowchart(_)) {
         return Err("highlighting only works on flowcharts and state diagrams".into());
     }
-    Ok(match kind {
-        Kind::Wireframe => render_wireframe_fit(&parse_wireframe(&text)?, max_width),
-        Kind::Sequence => render_sequence_fit(&parse_sequence(&text)?, max_width)?,
-        Kind::Flowchart | Kind::State => {
-            let mut graph = if kind == Kind::State { parse_state(&text)? } else { parse(&text)? };
+    Ok(match diagram {
+        Diagram::Wireframe(w) => render_wireframe_fit(&w, max_width),
+        Diagram::Sequence(s) => render_sequence_fit(&s, max_width)?,
+        Diagram::Flowchart(mut graph) => {
             highlight(&mut graph, &args.highlight)?;
             render_fit(&graph, args.direction.unwrap_or(graph.direction), max_width)
         }

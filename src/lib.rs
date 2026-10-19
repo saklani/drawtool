@@ -1,18 +1,19 @@
-//! Render Mermaid-style flowcharts, sequence diagrams and UI wireframes as
-//! box diagrams in the terminal.
+//! Render Mermaid diagrams and UI wireframes as box diagrams in the terminal.
 //!
 //! ```
-//! let graph = drawtool::parse("flowchart LR\na[build] --> b[ship]").unwrap();
+//! let drawtool::Diagram::Flowchart(graph) = drawtool::parse("flowchart LR\na[build] --> b[ship]").unwrap() else {
+//!     panic!()
+//! };
 //! let fit = drawtool::render_fit(&graph, graph.direction, 0);
 //! assert_eq!(fit.text.lines().nth(1), Some("│ build ├─►│ ship │"));
 //! ```
 //!
-//! [`kind`] says which kind of diagram some source is; each kind has its own
-//! parser and fitter (`parse`/`render_fit`, `parse_sequence`/
-//! `render_sequence_fit`, `parse_wireframe`/`render_wireframe_fit`). The
-//! parsed data model is exported too, for callers that want to inspect or
-//! modify a diagram before drawing it.
+//! [`parse`] reads any diagram drawtool draws; each kind has its own fitter
+//! (`render_fit`, `render_sequence_fit`, `render_wireframe_fit`). The parsed
+//! data model is exported too, for callers that want to inspect or modify a
+//! diagram before drawing it.
 
+use merman_core::RenderSemanticModel;
 use std::fmt;
 
 mod flowchart;
@@ -22,43 +23,43 @@ mod sequence;
 mod text;
 mod wireframe;
 
-pub use flowchart::{highlight, parse, parse_state, render, render_fit, wrap_labels};
+pub use flowchart::{highlight, render, render_fit, wrap_labels};
 pub use flowchart::{Arrow, Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
-pub use sequence::{parse_sequence, render_sequence, render_sequence_fit};
+pub use sequence::{render_sequence, render_sequence_fit};
 pub use sequence::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 pub use text::Fit;
-pub use wireframe::{parse_wireframe, render_wireframe, render_wireframe_fit};
+pub use wireframe::{render_wireframe, render_wireframe_fit};
 pub use wireframe::{Align, El, Screen, Wireframe, DEFAULT_WIDTH as WIREFRAME_WIDTH, MIN_WIDTH as WIREFRAME_MIN_WIDTH};
 
-/// The kinds of diagram drawtool draws.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Flowchart,
-    State,
-    Sequence,
-    Wireframe,
+/// A parsed diagram, by how drawtool draws it.
+#[derive(Debug, Clone)]
+pub enum Diagram {
+    /// A Mermaid flowchart or state diagram: boxes and arrows.
+    Flowchart(Graph),
+    /// A Mermaid sequence diagram.
+    Sequence(Sequence),
+    /// drawtool's own screen mockup, which isn't Mermaid.
+    Wireframe(Wireframe),
 }
 
-/// Which kind of diagram `text` is, from the first word of its first line
-/// that isn't blank or a `%%` comment: `flowchart`/`graph`, `stateDiagram-v2`, `sequenceDiagram`
-/// or `wireframe` (in any case).
+/// Parse diagram source. Input whose first line (past blank lines and `%%`
+/// comments) starts with `wireframe` is a wireframe; anything else is Mermaid,
+/// and Mermaid decides its kind.
 ///
 /// # Errors
 ///
-/// No such line, or one that starts with anything else.
-pub fn kind(text: &str) -> Result<Kind, Error> {
-    const START: &str = "start with `flowchart LR`, `flowchart TD`, `stateDiagram-v2`, `sequenceDiagram` or `wireframe`";
-    let mut lines = text.lines().enumerate().map(|(i, l)| (i + 1, l.trim()));
-    let (lineno, line) = lines
-        .find(|(_, l)| !l.is_empty() && !l.starts_with("%%"))
-        .ok_or_else(|| Error::new(format!("no diagram: {START}")))?;
-    let word = line.split_whitespace().next().unwrap_or_default().to_lowercase();
-    match word.as_str() {
-        "flowchart" | "graph" => Ok(Kind::Flowchart),
-        "statediagram" | "statediagram-v2" => Ok(Kind::State),
-        "sequencediagram" => Ok(Kind::Sequence),
-        "wireframe" => Ok(Kind::Wireframe),
-        _ => Err(Error::at(lineno, format!("expected a header, found `{line}`; {START}"))),
+/// What Mermaid rejects, at the line and column it names; a kind of diagram
+/// drawtool doesn't draw yet; or what drawtool can't draw within a kind.
+pub fn parse(text: &str) -> Result<Diagram, Error> {
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%"));
+    if first.is_some_and(|l| l.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("wireframe"))) {
+        return wireframe::parse_wireframe(text).map(Diagram::Wireframe);
+    }
+    match mermaid::parse(text)? {
+        RenderSemanticModel::Flowchart(m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
+        RenderSemanticModel::State(m) => flowchart::state(&m, text).map(Diagram::Flowchart),
+        RenderSemanticModel::Sequence(m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
+        _ => Err(Error::new("drawtool doesn't draw this kind of diagram yet")),
     }
 }
 

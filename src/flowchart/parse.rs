@@ -5,7 +5,7 @@ use super::model::{Arrow, Direction, EdgeDef, Graph, Group, NodeDef, Shape, Styl
 use crate::mermaid::label;
 use crate::Error;
 use merman_core::diagrams::flowchart::{FlowEdgeMarker, FlowEdgeStroke, FlowEdgeVisibility, FlowchartModel};
-use merman_core::RenderSemanticModel;
+use merman_core::diagrams::state::StateDiagramRenderModel;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::{HashMap, HashSet};
 
@@ -20,31 +20,27 @@ fn shape(name: &str) -> Shape {
     }
 }
 
-/// Parse a Mermaid flowchart (`flowchart`/`graph`) into a graph. Besides
-/// Mermaid's syntax, two comment lines are read: `%% highlight: a, b, c` and
-/// `%% stack: a b c`.
+/// A Mermaid flowchart as a graph. Besides Mermaid's syntax, two comment
+/// lines in `text` are read: `%% highlight: a, b, c` and `%% stack: a b c`.
 ///
 /// # Errors
 ///
-/// What Mermaid rejects; and what drawtool can't draw yet: a reversed
-/// direction (`RL`, `BT`) or an edge to a subgraph. Also a `%% highlight:` or
-/// `%% stack:` line that names a missing node.
-pub fn parse(text: &str) -> Result<Graph, Error> {
-    let RenderSemanticModel::Flowchart(m) = crate::mermaid::parse(text)? else {
-        return Err(Error::new("not a flowchart: start with `flowchart LR` or `flowchart TD`"));
-    };
+/// What drawtool can't draw yet: a reversed direction (`RL`, `BT`) or an
+/// edge to a subgraph. Also a `%% highlight:` or `%% stack:` line that names
+/// a missing node.
+pub(crate) fn flowchart(m: &FlowchartModel, text: &str) -> Result<Graph, Error> {
     let direction = match m.direction.as_deref().unwrap_or("TB") {
         "LR" => Direction::LR,
         "TB" | "TD" => Direction::TD,
         d => return Err(Error::new(format!("`{d}` isn't supported yet: use LR or TD"))),
     };
-    let (g, groups) = convert(&m)?;
+    let (g, groups) = convert(m)?;
     let mut graph = Graph { direction, g, groups, stacks: Vec::new() };
     directives(text, &mut graph)?;
     Ok(graph)
 }
 
-/// Parse a Mermaid `stateDiagram-v2` into a graph: states are boxes, `[*]`
+/// A Mermaid `stateDiagram-v2` as a graph: states are boxes, `[*]`
 /// the ● start and ◉ end, a `<<choice>>` a diamond, a note a box on a dotted
 /// line. A composite state is a box for the arrows into it, framed with the
 /// states inside it. `%% highlight:` and `%% stack:`
@@ -52,11 +48,8 @@ pub fn parse(text: &str) -> Result<Graph, Error> {
 ///
 /// # Errors
 ///
-/// What Mermaid rejects, or a bad `%% highlight:` / `%% stack:` line.
-pub fn parse_state(text: &str) -> Result<Graph, Error> {
-    let RenderSemanticModel::State(m) = crate::mermaid::parse(text)? else {
-        return Err(Error::new("not a state diagram: start with `stateDiagram-v2`"));
-    };
+/// A bad `%% highlight:` / `%% stack:` line.
+pub(crate) fn state(m: &StateDiagramRenderModel, text: &str) -> Result<Graph, Error> {
     let direction = if m.direction == "LR" { Direction::LR } else { Direction::TD };
     let (mut g, mut groups, mut index) = (DiGraph::new(), Vec::new(), HashMap::new());
     let mut group_of = HashMap::new();
@@ -165,4 +158,13 @@ fn directives(text: &str, graph: &mut Graph) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// A flowchart's graph, for unit tests.
+#[cfg(test)]
+pub(crate) fn parse(text: &str) -> Result<Graph, Error> {
+    match crate::parse(text)? {
+        crate::Diagram::Flowchart(g) => Ok(g),
+        _ => Err(Error::new("not a flowchart")),
+    }
 }

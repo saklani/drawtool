@@ -1,9 +1,11 @@
-use drawtool::{parse_sequence, render_sequence, render_sequence_fit};
+mod common;
+use common::sequence;
+use drawtool::{render_sequence, render_sequence_fit};
 use drawtool::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {
-    render_sequence(&parse_sequence(src).unwrap()).unwrap()
+    render_sequence(&sequence(src).unwrap()).unwrap()
 }
 
 /// Column of the first occurrence of `needle` in each line containing it.
@@ -24,7 +26,7 @@ fn two_party_exchange() {
 
 #[test]
 fn participants_are_ordered_by_first_mention_and_aliased() {
-    let seq = parse_sequence("sequenceDiagram\nparticipant b as Bob\na->>b: x\nc->>a: y").unwrap();
+    let seq = sequence("sequenceDiagram\nparticipant b as Bob\na->>b: x\nc->>a: y").unwrap();
     let ids: Vec<&str> = seq.participants.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, ["b", "a", "c"]);
     assert_eq!(seq.participants[0].lines, ["Bob"]);
@@ -32,7 +34,7 @@ fn participants_are_ordered_by_first_mention_and_aliased() {
 
 #[test]
 fn arrow_kinds() {
-    let seq = parse_sequence("sequenceDiagram\na->>b: x\na-->>b: x\na->b: x\na-->b: x\na-xb: x\na--xb: x\na-)b: x\na->>+b: go").unwrap();
+    let seq = sequence("sequenceDiagram\na->>b: x\na-->>b: x\na->b: x\na-->b: x\na-xb: x\na--xb: x\na-)b: x\na->>+b: go").unwrap();
     let heads: Vec<(Head, bool)> = seq
         .items
         .iter()
@@ -66,7 +68,7 @@ fn self_message_loops_right_of_the_lifeline() {
 
 #[test]
 fn notes_on_every_side() {
-    let seq = parse_sequence(
+    let seq = sequence(
         "sequenceDiagram\nNote left of a: L\nNote right of a: R\nNote over a: O\nNote over a,b: span\na->>b: x",
     )
     .unwrap();
@@ -104,16 +106,16 @@ fn wide_characters_keep_lifelines_aligned() {
 
 #[test]
 fn errors_name_the_line() {
-    assert_eq!(parse_sequence("sequenceDiagram\na->>b: ok\nnonsense here").unwrap_err().line, Some(3));
-    assert_eq!(parse_sequence("sequenceDiagram\nloop x\na->>b: y").unwrap_err().line, Some(3), "expects `end`");
-    assert_eq!(parse_sequence("sequenceDiagram\nend").unwrap_err().line, Some(2));
-    assert_eq!(parse_sequence("sequenceDiagram\nelse x").unwrap_err().line, Some(2));
+    assert_eq!(sequence("sequenceDiagram\na->>b: ok\nnonsense here").unwrap_err().line, Some(3));
+    assert_eq!(sequence("sequenceDiagram\nloop x\na->>b: y").unwrap_err().line, Some(3), "expects `end`");
+    assert_eq!(sequence("sequenceDiagram\nend").unwrap_err().line, Some(2));
+    assert_eq!(sequence("sequenceDiagram\nelse x").unwrap_err().line, Some(2));
 }
 
 #[test]
 fn ignored_lines() {
     let seq =
-        parse_sequence("sequenceDiagram\nautonumber\ntitle Checkout\n%% note\nactivate a\na->>b: x\ndeactivate a")
+        sequence("sequenceDiagram\nautonumber\ntitle Checkout\n%% note\nactivate a\na->>b: x\ndeactivate a")
             .unwrap();
     assert_eq!(seq.items.len(), 1);
 }
@@ -121,7 +123,7 @@ fn ignored_lines() {
 #[test]
 fn long_labels_wrap_to_fit_the_budget() {
     let src = "sequenceDiagram\nclient->>api: POST /checkout with a long description of the payload\napi->>pay: create a session for the destination wallet";
-    let seq = parse_sequence(src).unwrap();
+    let seq = sequence(src).unwrap();
     let wide = render_sequence_fit(&seq, 0).unwrap();
     let fitted = render_sequence_fit(&seq, 60).unwrap();
     assert!(wide.width > 60, "\n{}", wide.text);
@@ -138,7 +140,7 @@ fn a_long_label_never_covers_a_lifeline_it_spans() {
 #[test]
 fn box_groups_participants_without_drawing_a_frame() {
     let src = "sequenceDiagram\nbox Purple Team\nparticipant a\nparticipant b\nend\na->>b: hi";
-    let seq = parse_sequence(src).unwrap();
+    let seq = sequence(src).unwrap();
     let ids: Vec<&str> = seq.participants.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, ["a", "b"]);
     assert_eq!(seq.items.len(), 1, "only the message: box is not a frame");
@@ -174,7 +176,7 @@ fn note_over_non_adjacent_participants_spans_the_middle_one() {
 #[test]
 fn labels_keep_colons_and_trailing_text() {
     // As in Mermaid, `%%` is a comment only on a line of its own.
-    let seq = parse_sequence("sequenceDiagram\n%% the user\nparticipant a as Alice\na->>b: at 10:30 sharp %% why").unwrap();
+    let seq = sequence("sequenceDiagram\n%% the user\nparticipant a as Alice\na->>b: at 10:30 sharp %% why").unwrap();
     assert_eq!(seq.participants[0].lines, ["Alice"]);
     match &seq.items[0] {
         Item::Message(m) => assert_eq!(m.lines, ["at 10:30 sharp %% why"]),
@@ -185,7 +187,7 @@ fn labels_keep_colons_and_trailing_text() {
 #[test]
 fn errors_point_at_line_and_column() {
     let at = |src: &str| {
-        let e = parse_sequence(src).unwrap_err();
+        let e = sequence(src).unwrap_err();
         (e.line, e.column)
     };
     assert_eq!(at("sequenceDiagram\n  nonsense here"), (Some(2), Some(16)), "expects an arrow where the text ends");
@@ -214,7 +216,7 @@ fn hand_built_sequences_render() {
 
 #[test]
 fn hand_built_sequences_are_validated() {
-    let base = parse_sequence(
+    let base = sequence(
         "sequenceDiagram
 a->>b: x",
     )

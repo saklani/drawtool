@@ -41,7 +41,7 @@ fn empty_stdin_is_an_error() {
 fn input_without_a_header_is_an_error() {
     let out = drawtool(&[], "a --> b\n");
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("expected a header"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("no diagram: the first line names it"), "{}", stderr(&out));
 }
 
 #[test]

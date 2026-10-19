@@ -1,6 +1,6 @@
 # drawtool
 
-Render Mermaid-style flowcharts, sequence diagrams and UI wireframes as box diagrams in the terminal. Left-to-right by default,
+Render Mermaid flowcharts, state and sequence diagrams, and UI wireframes as box diagrams in the terminal. Left-to-right by default,
 so a diagram reads like a sentence and fits on screen without scrolling.
 
 ```
@@ -332,41 +332,39 @@ wireframe Home
 
 ## Syntax
 
-A strict subset of Mermaid flowchart syntax: anything drawtool accepts means the same thing to
-Mermaid, so a diagram renders the same on GitHub. (Checked against Mermaid 12.1's own parser on
-thousands of generated diagrams.)
+Input is standard Mermaid: drawtool parses it with Mermaid's own grammar
+([merman-core](https://crates.io/crates/merman-core), a Rust port that tracks mermaid.js) and draws it
+with its own layout. If Mermaid accepts a diagram, drawtool reads it the same way, and errors point at
+the line and column Mermaid names.
+
+drawtool draws `flowchart`/`graph` (LR or TD), `sequenceDiagram`, and `stateDiagram-v2`, which is laid
+out as a flowchart (`[*]` is ● or ◉, `<<choice>>` a diamond, a note hangs on a dotted line, a
+composite state is a frame):
 
 ```
-flowchart LR                  %% LR = left-to-right (default), TD = top-down
-req[HTTP request] --> parse(parse_body)
-parse --> ok{valid?}
-ok -->|yes| save[(db.insert)]
-ok -- no --> err[400 Bad Request]
-save -.-> cache[invalidate]   %% dotted
-save ==> resp[201 Created]    %% thick
-a --> b & c                   %% fan-out (also: a & b --> c)
-x --- y                       %% no arrowhead
-x <--> y                      %% arrowheads at both ends (also <-.-> <==>)
-n[two<br>lines]               %% multi-line label
-a[x] --> b; b --> c           %% `;` separates statements
-subgraph api [API server]     %% dashed group frame
-  mw --> route
-end
-%% stack: save cache
+stateDiagram-v2
+direction LR
+[*] --> Pending
+Pending --> Paid : webhook ok
+Pending --> Failed : declined
+Paid --> [*]
 ```
 
-Shapes: `[box]`, `(rounded)`, `{decision}`, `([stadium])`, `[(database)]`, `[[sub]]`. Other Mermaid
-shapes (`((circle))`, `{{hexagon}}`, `[/lean/]`, `>flag]`, ...) keep their label and are drawn as the
-nearest of these. Cycles (a back edge runs back through the layers, its arrowhead at its
-source's side, as in dot), self-loops and
-`subgraph ... end` groups (nested ones are flattened) are supported. As in Mermaid, a node's last
-label wins, `:::class`, `classDef`, `style`, `linkStyle` and `click` don't change the drawing, and a
-node belongs to the innermost subgraph that mentions it.
+```
+                                  ╭──────╮    ╭───╮
+                                ┌►│ Paid ├───►│ ◉ │
+╭───╮  ╭─────────╮ ┌─webhook ok─┘ ╰──────╯    ╰───╯
+│ ● ├─►│ Pending ├─┤
+╰───╯  ╰─────────╯ └─declined───┐ ╭────────╮
+                                └►│ Failed │
+                                  ╰────────╯
+```
 
-Not supported, and rejected with an error rather than drawn wrong: `RL`/`BT` directions,
-`--o`, `--x`, `o--o`, `x--x`, `~~~`, and edges to a subgraph. drawtool also accepts a few things Mermaid doesn't:
-no `flowchart` line (drawn left-to-right), `%%` comments at the end of a line, `#` comment lines,
-and `%% highlight: a, b` and `%% stack: a b` (plain comments to Mermaid).
+Mermaid's shapes are drawn as the nearest of box, rounded, decision and database. Styling
+(`classDef`, `style`, `:::class`, `linkStyle`, `click`) doesn't change the drawing, and nested
+subgraphs are flattened. Not drawn yet, and reported as such: other kinds of diagram, `RL`/`BT`
+directions, and edges to a subgraph. Two comment lines are drawtool's own, and plain comments to
+Mermaid: `%% highlight: a, b` and `%% stack: a b`.
 
 In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).
 

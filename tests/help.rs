@@ -17,12 +17,8 @@ fn help_examples_parse() {
     let out = Command::new(env!("CARGO_BIN_EXE_drawtool")).arg("--help").output().expect("run drawtool --help");
     let help = String::from_utf8(out.stdout).unwrap();
 
-    let flowchart = examples(&help, "Syntax (a subset");
+    let flowchart = examples(&help, "Two comment lines drawtool reads");
     let graph = common::graph(&flowchart).unwrap_or_else(|e| panic!("{e}\n{flowchart}"));
-    assert_eq!(graph.groups[0].title, "API server");
-
-    let sequence = examples(&help, "Sequence diagrams");
-    let seq = common::sequence(&sequence).unwrap_or_else(|e| panic!("{e}\n{sequence}"));
-    let api = seq.participants.iter().find(|p| p.id == "api").unwrap();
-    assert_eq!(api.lines, vec!["API server"], "trailing %% comments are not part of the text");
+    let marked = graph.g.node_weights().filter(|n| n.mark == drawtool::Mark::Highlight).count();
+    assert_eq!((marked, graph.stacks.len()), (3, 1), "{flowchart}");
 }

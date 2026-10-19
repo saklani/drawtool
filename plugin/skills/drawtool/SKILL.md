@@ -24,44 +24,41 @@ sentences. Run each diagram as its own Bash command that starts with `drawtool` 
 `&&` chains), so the mod knows the call. If the user says they can't see it (Claude Code before
 2.1.287 doesn't load mods), copy it verbatim into a plain ``` code block from then on.
 
-## Syntax
+## Input: standard Mermaid
+
+Write standard Mermaid; drawtool reads it with Mermaid's own grammar. It draws:
+
+- `flowchart LR` (preferred) or `flowchart TD`: dataflow, control flow, call graphs, pipelines,
+  architecture. Use `subgraph` frames for layers or services, `{decision}` for branches,
+  `-.->` for async or side effects, `==>` for the main path, `<-->` for request/response.
+- `stateDiagram-v2` with `direction LR`: state machines and lifecycles (`[*]`, `<<choice>>`,
+  `note`, composite `state X { }`).
+- `sequenceDiagram`: call order between components (request → API → vendor → webhook → DB →
+  client polls). Every message needs text (`a->>b: call`), and a `%%` comment goes on its own
+  line (at the end of a line it becomes part of the label).
+
+Not drawn yet: other kinds (class, ER, ...), `RL`/`BT`, and edges to a subgraph; drawtool says so.
+Shapes are drawn as the nearest of box, rounded, decision and database.
+
+drawtool's own additions, which Mermaid reads as comments:
 
 | Write | Meaning |
 |---|---|
-| `flowchart LR` / `flowchart TD` | required first line: left-to-right (preferred) / top-down |
-| `a[text]` `a(text)` `a{text}` | box / rounded (function, process) / decision (double border) |
-| `a --> b`, `a --> b --> c` | arrow, chains |
-| `a -->\|label\| b` or `a -- label --> b` | labelled edge (what data flows) |
-| `a -.-> b` / `a ==> b` / `a --- b` | dotted (async, optional, side effect) / thick (main path) / no arrow |
-| `a <--> b` (also `<-.->`, `<==>`, `<-- label -->`) | two-way: one edge, a head at each end (request/response, sync) |
-| `a --> b & c`, `a & b --> c` | fan-out / fan-in |
-| `a[line one<br>line two]` | multi-line label |
-| `wireframe Title` then indented `header:`, `input:`, `button:`, `card X:`, `row:`, `- item \| $1` | screen mockup (see README) |
-| `subgraph api [API server]` ... `end` | dashed group frame (layers, services, vendors) |
 | `%% highlight: a, b, c` | draw that path thick (the branch a request takes, where a bug is) |
 | `%% stack: save cache audit` | those boxes in one column, joined by short straight arrows: side effects (cache, log, metrics) under the step that causes them, or a pair that talks both ways (push/ack) instead of a line running back through the layers |
-| `%% comment` | comment |
-| `sequenceDiagram` then `a->>b: msg`, `b-->>a: reply` | sequence diagram (see below) |
 
-Define a node's label once (`p(parse_body)`), then refer to it by id (`p`); if a label is given twice, the last
-one wins (as in Mermaid). Cycles and self-loops work. The input is a strict subset of Mermaid, so
-the same source renders on GitHub; `RL`/`BT`, `--o`/`--x`, `~~~` and edges to a subgraph are errors.
 For "what does this screen look like" (UI code, a component tree, a design discussion), draw a
-`wireframe` from the real components and copy; several screens side by side show a flow.
-Flags: `-d TD` to override direction, `-w N` column budget
-(default 120 when run by Claude). A too-wide LR diagram gets its labels wrapped, then continues on
-the next row, each edge crossing the break drawn as a line wrapping around (several nest without
-crossing). drawtool never switches to TD by itself; if it still can't
-fit, it prints a `note:` on stderr. Never paste that note into the reply.
+`wireframe`, drawtool's own format: `wireframe Title` then indented `header:`, `input:`,
+`button:`, `card X:`, `row:`, `- item | $1` (see the README). Several screens side by side show a flow.
+
+Flags: `-d TD` to override direction, `-w N` column budget (default 120 when run by Claude). A
+too-wide LR diagram gets its labels wrapped, then continues on the next row, each edge crossing
+the break drawn as a line wrapping around (several nest without crossing). drawtool never
+switches to TD by itself; if it still can't fit, it prints a `note:` on stderr. Never paste that
+note into the reply.
 This plugin puts `drawtool` on PATH (it downloads the binary on first use). If that fails, it
 says so on stderr; then use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --git https://github.com/saklani/drawtool`.
-
-**Sequence diagrams:** when the question is about call order between components (request → API
-→ vendor → webhook → DB → client polls), start with `sequenceDiagram` instead of a flowchart.
-Messages: `a->>b: text` (call), `b-->>a: text` (reply), `a->>a: text` (self), `a--xb: 400`
-(failure). Also `participant db as Postgres`, `actor user`, `Note over a,b: text`, and frames
-`loop` / `alt` + `else` / `opt` / `par` + `and`, each closed by `end`.
 
 ## Drawing a good diagram
 
@@ -69,11 +66,12 @@ Messages: `a->>b: text` (call), `b-->>a: text` (reply), `a->>a: text` (self), `a
   (`-->|raw bytes|`, `-->|User dict|`). Don't invent steps.
 - Keep it small: about 4 to 12 nodes. Collapse helpers into their caller; split a big flow into
   two diagrams instead of one huge one.
-- Always use `flowchart LR`: it reads like a sentence and needs no scrolling.
+- Always use `flowchart LR` (or `direction LR` in a state diagram): it reads like a sentence and
+  needs no scrolling.
 - If a flow is too long for one line, break it yourself at a meaningful seam (request path,
   then processing, then storage) into several short LR diagrams, each with its own heading.
 - If there is no clean seam, let drawtool wrap it into rows.
 - TD is a mode, not a fallback: use `flowchart TD` only when the user asks for top-down.
 - Keep labels short (< 25 chars); drawtool wraps them only when it has to.
 - Use `{decision}` for branches, with edge labels on each branch (`yes`/`no`, `cache hit`/`miss`).
-- If drawtool reports a parse error, fix the line it names and rerun.
+- If drawtool reports an error, fix the line it names and rerun.

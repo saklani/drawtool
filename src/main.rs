@@ -7,52 +7,35 @@ use std::process::ExitCode;
 const SYNTAX: &str = "\
 The diagram comes on stdin, usually a quoted heredoc: drawtool <<'EOF' ... EOF
 
-Syntax (a subset of Mermaid flowcharts):
-  flowchart LR              %% LR = left-to-right (default), TD = top-down
-  req[HTTP request] --> parse(parse_body)
-  parse --> ok{valid?}
-  ok -->|yes| save[(db.insert)]
-  ok -- no --> err[400 Bad Request]
-  save -.-> cache[cache.invalidate]     %% dotted edge
-  save ==> resp[201 Created]            %% thick edge
-  a --> b & c                           %% fan-out (also: a & b --> c)
-  x --- y                               %% edge without arrowhead
-  x <--> y                              %% arrowheads at both ends (also <-.-> <==>)
-  n[two<br>lines]                        %% multi-line label
-  a[x] --> b; b --> c                   %% `;` separates statements
-  subgraph api [API server]             %% dashed group frame
-    mw --> route
-  end
+Input is standard Mermaid, read by Mermaid's own grammar. drawtool draws:
+  flowchart / graph    LR (left-to-right) or TD
+  stateDiagram-v2      as a flowchart; add `direction LR` for left-to-right
+  sequenceDiagram      (-d is ignored)
+Not drawn yet: other kinds of diagram, RL/BT, and edges to a subgraph. Shapes are
+drawn as the nearest of box, rounded, decision and database. In a sequence
+diagram a %% comment goes on its own line; at the end of a line it is text.
+
+Two comment lines drawtool reads (Mermaid ignores them):
+  flowchart LR
+  req[request] --> auth{token ok?}
+  auth -->|yes| save[(db.insert)]
+  auth -->|no| err[401]
+  save -.-> cache[cache.invalidate]
+  %% highlight: req, auth, save
   %% stack: save cache
-
+`%% highlight: a, b, c` draws that path thick (or pass --highlight a,b,c).
 `%% stack: a b c` draws those boxes in one column, in that order (in TD, one row),
-joined by short straight arrows: side effects under the step that causes them, or a
-pair that talks both ways. Mermaid reads it as a comment.
+joined by short straight arrows: side effects under the step that causes them, or
+a pair that talks both ways.
 
-Shapes: [box]  (rounded)  {decision}  ([stadium])  [(database)]  [[sub]]
-Other Mermaid shapes keep their label and are drawn as the nearest of these.
-Any valid input here is valid Mermaid and means the same; RL/BT, --o, --x,
-~~~ and edges to a subgraph are rejected. The header is required.
-
-Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
-  sequenceDiagram
-  %% or: actor user (a %% comment goes on its own line here)
-  participant api as API server
-  %% ->> solid, -->> dotted reply, -> / --> no head, -x cross end
-  user->>api: POST /orders
-  api-->>user: 201 Created
-  api->>api: validate
-  %% also: Note left of / right of X
-  Note over user,api: text
-  loop every 5m / alt x / else y / opt / par / and ... end
-
-Wireframes (start with `wireframe [title] [width=N]`, indent children):
+Wireframes are drawtool's own, not Mermaid (start with `wireframe [title] [width=N]`,
+indent children):
   header: ← Back | Title | ?    input: Email = you@x.com   button: Continue
   card Title:  row:  col:       tabs: *A | B   nav: *Home | Pay
   - item | $4.50                toggle: Wi-Fi = on   checkbox: x = on   radio: *a | b
 ";
 
-/// Render Mermaid-style flowcharts, sequence diagrams and UI wireframes in the terminal.
+/// Render Mermaid flowcharts, state and sequence diagrams, and UI wireframes in the terminal.
 #[derive(Parser)]
 #[command(version, after_help = SYNTAX)]
 struct Args {

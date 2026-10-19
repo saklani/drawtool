@@ -1,7 +1,7 @@
 #!/bin/sh
 # drawtool for the Claude Code plugin. Plugin bin/ comes after the user's PATH,
 # so a drawtool they installed themselves wins and this runs only when there is
-# none: it fetches this platform's build from the `build` release once per
+# none: it fetches this platform's build from the latest release once per
 # plugin version, then runs it.
 set -e
 
@@ -23,7 +23,7 @@ dir="${XDG_CACHE_HOME:-$HOME/.cache}/drawtool/$version"
 bin="$dir/drawtool"
 
 if [ ! -x "$bin" ]; then
-  base="${DRAWTOOL_DOWNLOAD:-https://github.com/saklani/drawtool/releases/download/build}"
+  base="${DRAWTOOL_DOWNLOAD:-https://github.com/saklani/drawtool/releases/latest/download}"
   mkdir -p "$dir"
   if ! curl -fsSL "$base/drawtool-$target" -o "$bin.$$"; then
     rm -f "$bin.$$"

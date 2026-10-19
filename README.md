@@ -375,7 +375,7 @@ In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a cr
 The `drawtool` plugin (in `plugin/`) has three parts:
 
 - drawtool itself: on first use it downloads the prebuilt binary for your platform (macOS or
-  Linux, arm64 or x86-64) from the [`build` release](https://github.com/saklani/drawtool/releases/tag/build),
+  Linux, arm64 or x86-64) from the [latest release](https://github.com/saklani/drawtool/releases/latest),
   which CI rebuilds on every push that changes the crate. A `drawtool` already on your PATH wins.
 - a skill that teaches Claude Code to sketch diagrams with drawtool when you ask it to explain a
   dataflow or control flow

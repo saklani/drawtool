@@ -1,6 +1,6 @@
 # Builds drawtool for each platform the Claude Code plugin supports and puts
-# the binaries on the rolling `build` release, where plugin/bin/drawtool
-# downloads them from.
+# the binaries on the release for the crate's version (v0.1.0 holds the latest
+# 0.1.0 build), marked latest, which plugin/bin/drawtool downloads from.
 name: binaries
 
 on:
@@ -41,17 +41,19 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - name: Point the build release at this commit and replace its binaries
+      - name: Point the version's release at this commit and replace its binaries
         run: |
+          tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           notes="drawtool built from $GITHUB_SHA by CI. The Claude Code plugin downloads these; to build it yourself: cargo install --git https://github.com/$GH_REPO"
-          if gh release view build >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/build" -f sha="$GITHUB_SHA" -F force=true
-            gh release edit build --notes "$notes"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true
+            gh release edit "$tag" --notes "$notes" --latest
           else
-            gh release create build --target "$GITHUB_SHA" --title "Latest build" --notes "$notes"
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes "$notes" --latest
           fi
-          gh release upload build dist/* --clobber
+          gh release upload "$tag" dist/* --clobber

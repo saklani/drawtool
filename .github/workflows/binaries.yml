@@ -23,13 +23,13 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup target add ${{ matrix.target }}
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/drawtool drawtool-${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: drawtool-${{ matrix.target }}
           path: drawtool-${{ matrix.target }}
@@ -41,7 +41,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

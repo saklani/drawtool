@@ -1,0 +1,8 @@
+{
+  "name": "drawtool",
+  "version": "0.1.0",
+  "description": "Box-and-arrow diagrams in the terminal: a skill that draws them with drawtool, and a mod that shows each diagram in full",
+  "author": { "name": "saklani" },
+  "repository": "https://github.com/saklani/drawtool",
+  "license": "MIT"
+}

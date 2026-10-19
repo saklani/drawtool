@@ -5,7 +5,7 @@ description: Sketch a quick box-and-arrow diagram in the terminal. Use when the 
 
 # drawtool: terminal diagrams
 
-`drawtool` turns a Mermaid-style flowchart into a Unicode box diagram you can paste into your reply.
+`drawtool` turns a Mermaid-style flowchart into a Unicode box diagram and shows it to the user.
 
 ```bash
 drawtool <<'EOF'
@@ -17,8 +17,12 @@ ok -->|no| err[400]
 EOF
 ```
 
-**The user does not reliably see Bash output.** Copy the rendered diagram verbatim into your
-reply inside a plain ``` code block, then explain it in a few sentences.
+**The user sees the diagram where the Bash call ran.** This plugin's display mod draws a
+`drawtool` call's output in full in the transcript, under a short `drawtool (flowchart LR, N
+lines)` row. Don't copy the diagram into your reply: refer to it and explain it in a few
+sentences. Run each diagram as its own Bash command that starts with `drawtool` (no pipes, no
+`&&` chains), so the mod knows the call. If the user says they can't see it (Claude Code before
+2.1.287 doesn't load mods), copy it verbatim into a plain ``` code block from then on.
 
 ## Syntax
 
@@ -50,7 +54,7 @@ the next row, each edge crossing the break drawn as a line wrapping around (seve
 crossing). drawtool never switches to TD by itself; if it still can't
 fit, it prints a `note:` on stderr. Never paste that note into the reply.
 If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
-`cargo install --path /Users/shauryasaklani/Development/drawtool`.
+`cargo install --git https://github.com/saklani/drawtool`.
 
 **Sequence diagrams:** when the question is about call order between components (request → API
 → vendor → webhook → DB → client polls), start with `sequenceDiagram` instead of a flowchart.

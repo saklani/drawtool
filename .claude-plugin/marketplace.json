@@ -1,0 +1,6 @@
+{
+  "name": "drawtool",
+  "owner": { "name": "saklani" },
+  "description": "drawtool: terminal diagrams for Claude Code",
+  "plugins": [{ "name": "drawtool", "source": "./plugin" }]
+}

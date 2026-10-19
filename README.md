@@ -370,14 +370,25 @@ and `%% highlight: a, b` and `%% stack: a b` (plain comments to Mermaid).
 
 In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).
 
-## Claude Code skill
+## Claude Code plugin
 
-`skills/drawtool/SKILL.md` teaches Claude Code to sketch diagrams with drawtool when you ask it
-to explain a dataflow or control flow. Link it into your skills directory:
+The `drawtool` plugin (in `plugin/`) has two parts:
 
-```sh
-ln -s "$PWD/skills/drawtool" ~/.claude/skills/drawtool
+- a skill that teaches Claude Code to sketch diagrams with drawtool when you ask it to explain a
+  dataflow or control flow
+- a display mod that shows each diagram in full where Claude ran it, under a short
+  `drawtool (flowchart LR, N lines)` row, so Claude doesn't retype it into its reply
+
+Install drawtool first (above), then type at a Claude Code prompt:
+
 ```
+/plugin install drawtool --marketplace saklani/drawtool
+```
+
+Answer `y` to add the marketplace, then pick a scope. The mod needs Claude Code 2.1.287 or later.
+On an older version the skill still works; ask Claude to paste the diagram if you can't see it.
+
+The mod has its own tests: `claude plugin test plugin`.
 
 ## Tests
 

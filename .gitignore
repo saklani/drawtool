@@ -1,2 +1,4 @@
 target/
 .claude/
+plugin/.claude-plugin/types/
+plugin/tsconfig.json

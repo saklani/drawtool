@@ -11,4 +11,4 @@ pub use fit::{render_fit, wrap_labels};
 pub use layout::render;
 pub use marks::highlight;
 pub use model::{Arrow, Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
-pub use parse::parse;
+pub use parse::{parse, parse_state};

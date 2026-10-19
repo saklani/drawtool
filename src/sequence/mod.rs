@@ -1,4 +1,4 @@
-//! Sequence diagrams: a subset of Mermaid's `sequenceDiagram`.
+//! Sequence diagrams: Mermaid's `sequenceDiagram`, parsed by merman-core.
 //!
 //! Participants sit in a row with lifelines running down; each message is a
 //! label row above a horizontal arrow. Columns are spaced so every label fits
@@ -7,12 +7,9 @@
 
 use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
-use crate::text::{strip_comment, unquote};
 use crate::Error;
 use crate::Style;
-use regex::Regex;
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use merman_core::RenderSemanticModel;
 
 #[derive(Clone, Debug)]
 pub struct Participant {
@@ -115,39 +112,15 @@ impl Sequence {
     }
 }
 
-struct Patterns {
-    participant: Regex,
-    message: Regex,
-    note: Regex,
-    start: Regex,
-    divider: Regex,
-    ignored: Regex,
-    br: Regex,
-}
-
-static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
-    let rx = |s: &str| Regex::new(s).unwrap();
-    Patterns {
-        participant: rx(r"(?i)^(participant|actor)\s+([^\s]+?)(?:\s+as\s+(.+))?$"),
-        message: rx(r"^([^\s:+\-][^\s:]*?)\s*(-->>|->>|--x|-x|--\)|-\)|-->|->)\s*[+\-]?\s*([^\s:]+)\s*(?::(.*))?$"),
-        note: rx(r"(?i)^note\s+(left of|right of|over)\s+([^\s,:]+)(?:\s*,\s*([^\s,:]+))?\s*:(.*)$"),
-        start: rx(r"^(loop|alt|opt|par|critical|break|rect|box)(?:\s+(.*))?$"),
-        divider: rx(r"^(else|and|option)(?:\s+(.*))?$"),
-        ignored: rx(r"(?i)^(sequenceDiagram$|autonumber\b|activate\b|deactivate\b|title\b|acc(Title|Descr)\b)"),
-        br: rx(r"(?i)<br\s*/?>"),
-    }
-});
-
-/// [`unquote`], then expand `<br>` / `\n` and split into trimmed lines.
-#[must_use]
-fn clean_label(text: &str) -> Vec<String> {
-    let t = PATTERNS.br.replace_all(&unquote(text), "\n").replace("\\n", "\n");
-    t.split('\n').map(|l| l.trim().to_string()).collect()
-}
+/// Mermaid's message codes (`SequenceDB.LINETYPE`): frame starts with their
+/// keyword, dividers, and ends.
+const FRAMES: &[(i32, &str)] = &[(10, "loop"), (12, "alt"), (15, "opt"), (19, "par"), (22, "rect"), (27, "critical"), (30, "break")];
+const DIVIDERS: &[(i32, &str)] = &[(13, "else"), (20, "and"), (28, "option")];
+const ENDS: &[i32] = &[11, 14, 16, 21, 23, 29, 31];
 
 /// Label text as lines; empty text means no label.
-fn text_lines(text: Option<&str>) -> Vec<String> {
-    let lines = clean_label(text.unwrap_or(""));
+fn text_lines(text: &str) -> Vec<String> {
+    let lines = crate::mermaid::label(text, false);
     if lines.iter().all(String::is_empty) {
         Vec::new()
     } else {
@@ -155,104 +128,58 @@ fn text_lines(text: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Participants in order of first mention, found again by id.
-#[derive(Default)]
-struct Participants {
-    list: Vec<Participant>,
-    index: HashMap<String, usize>,
-}
-
-impl Participants {
-    fn get(&mut self, id: &str) -> usize {
-        *self.index.entry(id.to_string()).or_insert_with(|| {
-            self.list.push(Participant { id: id.to_string(), lines: vec![id.to_string()], actor: false });
-            self.list.len() - 1
-        })
-    }
-}
-
-/// Parse sequence diagram source.
+/// Parse a Mermaid `sequenceDiagram`.
 ///
 /// # Errors
 ///
-/// A line that isn't a participant, message, note or block keyword, or an
-/// unbalanced block.
+/// What Mermaid rejects, at the line and column it names.
 pub fn parse_sequence(text: &str) -> Result<Sequence, Error> {
-    let p = &*PATTERNS;
-    let mut parts = Participants::default();
+    let RenderSemanticModel::Sequence(m) = crate::mermaid::parse(text)? else {
+        return Err(Error::new("not a sequence diagram: start with `sequenceDiagram`"));
+    };
+    let participants: Vec<Participant> = m
+        .actor_order
+        .iter()
+        .map(|id| {
+            let a = &m.actors[id];
+            Participant { id: id.clone(), lines: text_lines(&a.description), actor: a.actor_type == "actor" }
+        })
+        .collect();
+    let at = |id: &Option<String>| id.as_ref().and_then(|id| m.actor_order.iter().position(|a| a == id));
+    let titled = |keyword: &str, text: &str| if text.trim().is_empty() { keyword.to_string() } else { format!("{keyword} {}", text.trim()) };
     let mut items = Vec::new();
-    // Open blocks: keyword, and where they start (for "never closed").
-    let mut open: Vec<(String, usize, usize)> = Vec::new();
-    for (n, raw) in text.lines().enumerate() {
-        let lineno = n + 1;
-        let line = strip_comment(raw.trim()).trim_end_matches(';').trim();
-        let title = |c: &regex::Captures| match c.get(2).map(|m| m.as_str().trim()) {
-            Some(text) if !text.is_empty() => format!("{} {text}", &c[1]),
-            _ => c[1].to_string(),
-        };
-        // 1-based character column of byte offset `at` in `line`, in the original line.
-        let indent = raw[..raw.len() - raw.trim_start().len()].chars().count();
-        let col = |at: usize| indent + line[..at].chars().count() + 1;
-        if line.is_empty() || line.starts_with("%%") || p.ignored.is_match(line) {
-            continue;
-        } else if let Some(c) = p.participant.captures(line) {
-            let i = parts.get(&c[2]);
-            parts.list[i].actor = c[1].eq_ignore_ascii_case("actor");
-            if let Some(alias) = c.get(3) {
-                parts.list[i].lines = text_lines(Some(alias.as_str()));
+    for msg in &m.messages {
+        let (t, text) = (msg.message_type, msg.message_text());
+        let item = if let Some(&(_, keyword)) = FRAMES.iter().find(|f| f.0 == t) {
+            // A `rect`'s text is just its colour.
+            Item::Start(if keyword == "rect" { keyword.to_string() } else { titled(keyword, text) })
+        } else if let Some(&(_, keyword)) = DIVIDERS.iter().find(|d| d.0 == t) {
+            Item::Divider(titled(keyword, text))
+        } else if ENDS.contains(&t) {
+            Item::End
+        } else if let (Some(a), Some(z)) = (at(&msg.from), at(&msg.to)) {
+            let lines = text_lines(text);
+            match t {
+                2 => {
+                    let side = [NoteSide::Left, NoteSide::Right].get(msg.placement.unwrap_or(2) as usize).copied();
+                    Item::Note(Note { side: side.unwrap_or(NoteSide::Over), first: a.min(z), last: a.max(z), lines })
+                }
+                0 | 1 | 3..=6 | 24 | 25 => {
+                    let head = match t {
+                        3 | 4 => Head::Cross,
+                        5 | 6 => Head::Open,
+                        _ => Head::Arrow,
+                    };
+                    Item::Message(Message { from: a, to: z, lines, dotted: matches!(t, 1 | 4 | 6 | 25), head })
+                }
+                _ => continue,
             }
-        } else if let Some(c) = p.note.captures(line) {
-            let side = match c[1].to_lowercase().as_str() {
-                "left of" => NoteSide::Left,
-                "right of" => NoteSide::Right,
-                _ => NoteSide::Over,
-            };
-            let a = parts.get(&c[2]);
-            let z = c.get(3).map_or(a, |m| parts.get(m.as_str()));
-            if side != NoteSide::Over && a != z {
-                let at = c.get(3).map_or(0, |m| m.start());
-                return Err(Error::at_column(lineno, col(at), "only `Note over` can span two participants"));
-            }
-            let lines = text_lines(c.get(4).map(|m| m.as_str()));
-            items.push(Item::Note(Note { side, first: a.min(z), last: a.max(z), lines }));
-        } else if line == "end" {
-            let (kind, _, _) =
-                open.pop().ok_or_else(|| Error::at_column(lineno, col(0), "`end` without an open block"))?;
-            if kind != "box" {
-                items.push(Item::End);
-            }
-        } else if let Some(c) = p.start.captures(line) {
-            open.push((c[1].to_string(), lineno, col(0)));
-            // `box` only groups participant declarations (Mermaid colours them),
-            // and a `rect`'s text is just its colour: neither needs a title.
-            match &c[1] {
-                "box" => {}
-                "rect" => items.push(Item::Start("rect".to_string())),
-                _ => items.push(Item::Start(title(&c))),
-            }
-        } else if let Some(c) = p.divider.captures(line) {
-            if open.is_empty() {
-                return Err(Error::at_column(lineno, col(0), format!("`{}` outside a block", &c[1])));
-            }
-            items.push(Item::Divider(title(&c)));
-        } else if let Some(c) = p.message.captures(line) {
-            let (from, to, arrow) = (parts.get(&c[1]), parts.get(&c[3]), &c[2]);
-            let head = match arrow {
-                a if a.ends_with('x') => Head::Cross,
-                a if a.ends_with(">>") || a.ends_with(')') => Head::Arrow,
-                _ => Head::Open,
-            };
-            let lines = text_lines(c.get(4).map(|m| m.as_str()));
-            items.push(Item::Message(Message { from, to, lines, dotted: arrow.starts_with("--"), head }));
         } else {
-            let message = format!("cannot parse {line:?} (expected a message like A->>B: text)");
-            return Err(Error::at_column(lineno, col(0), message));
-        }
+            continue;
+        };
+        items.push(item);
     }
-    if let Some((kind, lineno, column)) = open.pop() {
-        return Err(Error::at_column(lineno, column, format!("`{kind}` is never closed with `end`")));
-    }
-    Ok(Sequence { participants: parts.list, items })
+    Ok(Sequence { participants, items })
 }
 
 // ---- Layout -----------------------------------------------------------------

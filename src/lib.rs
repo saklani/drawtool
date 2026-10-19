@@ -16,12 +16,13 @@
 use std::fmt;
 
 mod flowchart;
+mod mermaid;
 mod paint;
 mod sequence;
 mod text;
 mod wireframe;
 
-pub use flowchart::{highlight, parse, render, render_fit, wrap_labels};
+pub use flowchart::{highlight, parse, parse_state, render, render_fit, wrap_labels};
 pub use flowchart::{Arrow, Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
 pub use sequence::{parse_sequence, render_sequence, render_sequence_fit};
 pub use sequence::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
@@ -33,19 +34,20 @@ pub use wireframe::{Align, El, Screen, Wireframe, DEFAULT_WIDTH as WIREFRAME_WID
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Flowchart,
+    State,
     Sequence,
     Wireframe,
 }
 
 /// Which kind of diagram `text` is, from the first word of its first line
-/// that isn't blank or a `%%` comment: `flowchart`/`graph`, `sequenceDiagram`
+/// that isn't blank or a `%%` comment: `flowchart`/`graph`, `stateDiagram-v2`, `sequenceDiagram`
 /// or `wireframe` (in any case).
 ///
 /// # Errors
 ///
 /// No such line, or one that starts with anything else.
 pub fn kind(text: &str) -> Result<Kind, Error> {
-    const START: &str = "start with `flowchart LR`, `flowchart TD`, `sequenceDiagram` or `wireframe`";
+    const START: &str = "start with `flowchart LR`, `flowchart TD`, `stateDiagram-v2`, `sequenceDiagram` or `wireframe`";
     let mut lines = text.lines().enumerate().map(|(i, l)| (i + 1, l.trim()));
     let (lineno, line) = lines
         .find(|(_, l)| !l.is_empty() && !l.starts_with("%%"))
@@ -53,6 +55,7 @@ pub fn kind(text: &str) -> Result<Kind, Error> {
     let word = line.split_whitespace().next().unwrap_or_default().to_lowercase();
     match word.as_str() {
         "flowchart" | "graph" => Ok(Kind::Flowchart),
+        "statediagram" | "statediagram-v2" => Ok(Kind::State),
         "sequencediagram" => Ok(Kind::Sequence),
         "wireframe" => Ok(Kind::Wireframe),
         _ => Err(Error::at(lineno, format!("expected a header, found `{line}`; {START}"))),

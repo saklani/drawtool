@@ -1,5 +1,5 @@
 use clap::Parser;
-use drawtool::{highlight, kind, parse, parse_sequence, parse_wireframe, Direction, Fit, Kind};
+use drawtool::{highlight, kind, parse, parse_sequence, parse_state, parse_wireframe, Direction, Fit, Kind};
 use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
@@ -36,11 +36,14 @@ Any valid input here is valid Mermaid and means the same; RL/BT, --o, --x,
 
 Sequence diagrams (start the input with `sequenceDiagram`; -d is ignored):
   sequenceDiagram
-  participant api as API server         %% or: actor user
-  user->>api: POST /orders              %% ->> solid, -->> dotted reply
-  api-->>user: 201 Created              %% -> / --> no head, -x cross end
-  api->>api: validate                   %% self-message
-  Note over user,api: text              %% also: Note left of / right of X
+  %% or: actor user (a %% comment goes on its own line here)
+  participant api as API server
+  %% ->> solid, -->> dotted reply, -> / --> no head, -x cross end
+  user->>api: POST /orders
+  api-->>user: 201 Created
+  api->>api: validate
+  %% also: Note left of / right of X
+  Note over user,api: text
   loop every 5m / alt x / else y / opt / par / and ... end
 
 Wireframes (start with `wireframe [title] [width=N]`, indent children):
@@ -99,14 +102,14 @@ fn read_stdin() -> Result<String, String> {
 fn run(args: &Args, max_width: usize) -> Result<Fit, Box<dyn std::error::Error>> {
     let text = read_stdin()?;
     let kind = kind(&text)?;
-    if !args.highlight.is_empty() && kind != Kind::Flowchart {
-        return Err("highlighting only works on flowcharts".into());
+    if !args.highlight.is_empty() && !matches!(kind, Kind::Flowchart | Kind::State) {
+        return Err("highlighting only works on flowcharts and state diagrams".into());
     }
     Ok(match kind {
         Kind::Wireframe => render_wireframe_fit(&parse_wireframe(&text)?, max_width),
         Kind::Sequence => render_sequence_fit(&parse_sequence(&text)?, max_width)?,
-        Kind::Flowchart => {
-            let mut graph = parse(&text)?;
+        Kind::Flowchart | Kind::State => {
+            let mut graph = if kind == Kind::State { parse_state(&text)? } else { parse(&text)? };
             highlight(&mut graph, &args.highlight)?;
             render_fit(&graph, args.direction.unwrap_or(graph.direction), max_width)
         }

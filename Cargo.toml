@@ -6,6 +6,7 @@ description = "Render Mermaid-style flowcharts as box diagrams in the terminal"
 license = "MIT"
 
 [dependencies]
+merman-core = { version = "=0.9.1", default-features = false, features = ["diagram-flowchart", "diagram-sequence", "diagram-state"] }
 clap = { version = "4", features = ["derive"] }
 petgraph = { version = "0.8", default-features = false, features = ["std"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode"] }

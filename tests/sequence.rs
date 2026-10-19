@@ -32,7 +32,7 @@ fn participants_are_ordered_by_first_mention_and_aliased() {
 
 #[test]
 fn arrow_kinds() {
-    let seq = parse_sequence("sequenceDiagram\na->>b\na-->>b\na->b\na-->b\na-xb\na--xb\na-)b\na->>+b: go").unwrap();
+    let seq = parse_sequence("sequenceDiagram\na->>b: x\na-->>b: x\na->b: x\na-->b: x\na-xb: x\na--xb: x\na-)b: x\na->>+b: go").unwrap();
     let heads: Vec<(Head, bool)> = seq
         .items
         .iter()
@@ -105,7 +105,7 @@ fn wide_characters_keep_lifelines_aligned() {
 #[test]
 fn errors_name_the_line() {
     assert_eq!(parse_sequence("sequenceDiagram\na->>b: ok\nnonsense here").unwrap_err().line, Some(3));
-    assert_eq!(parse_sequence("sequenceDiagram\nloop x\na->>b").unwrap_err().line, Some(2));
+    assert_eq!(parse_sequence("sequenceDiagram\nloop x\na->>b: y").unwrap_err().line, Some(3), "expects `end`");
     assert_eq!(parse_sequence("sequenceDiagram\nend").unwrap_err().line, Some(2));
     assert_eq!(parse_sequence("sequenceDiagram\nelse x").unwrap_err().line, Some(2));
 }
@@ -172,12 +172,12 @@ fn note_over_non_adjacent_participants_spans_the_middle_one() {
 }
 
 #[test]
-fn labels_keep_colons_and_drop_trailing_comments() {
-    let seq =
-        parse_sequence("sequenceDiagram\nparticipant a as Alice %% the user\na->>b: at 10:30 sharp %% why").unwrap();
+fn labels_keep_colons_and_trailing_text() {
+    // As in Mermaid, `%%` is a comment only on a line of its own.
+    let seq = parse_sequence("sequenceDiagram\n%% the user\nparticipant a as Alice\na->>b: at 10:30 sharp %% why").unwrap();
     assert_eq!(seq.participants[0].lines, ["Alice"]);
     match &seq.items[0] {
-        Item::Message(m) => assert_eq!(m.lines, ["at 10:30 sharp"]),
+        Item::Message(m) => assert_eq!(m.lines, ["at 10:30 sharp %% why"]),
         other => panic!("expected a message, got {other:?}"),
     }
 }
@@ -188,10 +188,10 @@ fn errors_point_at_line_and_column() {
         let e = parse_sequence(src).unwrap_err();
         (e.line, e.column)
     };
-    assert_eq!(at("sequenceDiagram\n  nonsense here"), (Some(2), Some(3)));
-    assert_eq!(at("sequenceDiagram\nNote left of a, b: x"), (Some(2), Some(17)));
+    assert_eq!(at("sequenceDiagram\n  nonsense here"), (Some(2), Some(16)), "expects an arrow where the text ends");
+    assert_eq!(at("sequenceDiagram\nNote left of a, b: x"), (Some(2), Some(15)));
     assert_eq!(at("sequenceDiagram\n    end"), (Some(2), Some(5)));
-    assert_eq!(at("sequenceDiagram\n  loop x\na->>b"), (Some(2), Some(3)));
+    assert_eq!(at("sequenceDiagram\n数据->>b"), (Some(2), Some(7)), "columns count characters, not bytes");
 }
 
 #[test]

@@ -135,9 +135,9 @@ fn headers_comments_and_ignored_lines() {
 #[test]
 fn the_header_is_required_and_comes_once() {
     let message = |src: &str| parse(src).unwrap_err().to_string();
-    assert!(message("a --> b").starts_with("line 1: expected a header, found `a --> b`; a flowchart starts"));
+    assert!(message("a --> b").contains("no diagram"), "{}", message("a --> b"));
     assert!(message("%% only a comment").contains("no diagram"));
-    assert!(message("flowchart LR\na\nflowchart TD").starts_with("line 3: a second header"));
+    assert!(message("flowchart LR\na\nflowchart TD").starts_with("line 3, column 1: unexpected flowchart"));
 }
 
 #[test]
@@ -148,22 +148,29 @@ fn errors_point_at_line_and_column() {
     };
     // Each source gets a header line first, so its lines count from 2.
     assert_eq!(at("a --> b\n  b ~~> c"), (Some(3), Some(5)));
-    assert_eq!(at("a --> "), (Some(2), Some(6)));
+    assert_eq!(at("a --> "), (Some(2), Some(6)), "an expected node goes where the text ends");
+    assert_eq!(at("a --> b\nb -->\n\n"), (Some(3), Some(6)), "not on a trailing blank line");
     assert_eq!(at("a[unclosed --> b"), (Some(2), Some(2)));
-    assert_eq!(at("subgraph s\na"), (Some(2), None));
+    assert_eq!(at("subgraph s\na"), (Some(3), Some(2)));
     let e = parse("flowchart LR\nx --> 数据 ~~> c").unwrap_err();
     assert_eq!(e.column, Some(10), "columns count characters, not bytes: {e}");
 }
 
 #[test]
-fn mermaid_syntax_outside_the_subset_is_an_error() {
+fn standard_mermaid_parses_and_what_drawtool_cannot_draw_yet_is_an_error() {
     let message = |src: &str| parse(src).unwrap_err().to_string();
-    assert!(message("flowchart RL\na --> b").contains("`RL` isn't supported"));
-    assert!(message("flowchart BT\na --> b").contains("`BT` isn't supported"));
-    assert!(message("flowchart LR\nsubgraph S\nx\nend\nS --> y").contains("both a subgraph and a node"));
-    for src in ["a->b", "a --o b", "a --x b", "a ~~~ b", "a-b --> c", "a <--- b", "a <-> b", "a o--o b"] {
-        assert!(parse(&format!("flowchart LR\n{src}")).is_err(), "{src:?}");
+    assert!(message("flowchart RL\na --> b").contains("`RL` isn't supported yet"));
+    assert!(message("flowchart BT\na --> b").contains("`BT` isn't supported yet"));
+    assert!(message("flowchart LR\nsubgraph S\nx\nend\nS --> y").contains("edges to subgraphs"));
+    for src in ["a --o b", "a --x b", "a ~~~ b", "a o--o b", "a@{ shape: cyl, label: \"db\" } --> b"] {
+        assert!(parse(&format!("flowchart LR\n{src}")).is_ok(), "{src:?}");
     }
+    for src in ["a->b", "a <-> b"] {
+        assert!(parse(&format!("flowchart LR\n{src}")).is_err(), "Mermaid rejects {src:?}");
+    }
+    let g = parse("flowchart LR\na ~~~ b\nc@{ shape: cyl, label: \"db\" }").unwrap();
+    assert_eq!(g.g.edge_count(), 0, "an invisible link draws nothing");
+    assert_eq!(g.g.node_weights().last().map(|n| (n.lines.clone(), n.shape)), Some((vec!["db".into()], drawtool::Shape::Database)));
 }
 
 #[test]

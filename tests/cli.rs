@@ -138,11 +138,12 @@ fn highlight_rejects_unknown_nodes_and_missing_edges() {
 fn subgraph_membership_and_errors() {
     let g = parse("flowchart LR\nsubgraph api [API server]\n  a --> b\n  subgraph inner\n    c\n  end\nend\nd --> a")
         .unwrap();
-    assert_eq!(g.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["API server", "inner"]);
+    // Mermaid lists subgraphs innermost first.
+    assert_eq!(g.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["inner", "API server"]);
     let group = |id: &str| g.g.node_weights().find(|n| n.id == id).unwrap().group;
-    assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(0), Some(0), Some(1), None));
-    assert!(parse("flowchart LR\na --> b\nend").unwrap_err().message.contains("without a matching"));
-    assert!(parse("flowchart LR\nsubgraph x\na").unwrap_err().message.contains("never closed"));
+    assert_eq!((group("a"), group("b"), group("c"), group("d")), (Some(1), Some(1), Some(0), None));
+    assert_eq!(parse("flowchart LR\na --> b\nend").unwrap_err().line, Some(3));
+    assert!(parse("flowchart LR\nsubgraph x\na").unwrap_err().message.contains("expected \"end\""));
 }
 
 #[test]

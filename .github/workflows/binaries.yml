@@ -1,0 +1,57 @@
+# Builds drawtool for each platform the Claude Code plugin supports and puts
+# the binaries on the rolling `build` release, where plugin/bin/drawtool
+# downloads them from.
+name: binaries
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "Cargo.toml", "Cargo.lock", ".github/workflows/binaries.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/drawtool drawtool-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drawtool-${{ matrix.target }}
+          path: drawtool-${{ matrix.target }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Point the build release at this commit and replace its binaries
+        run: |
+          notes="drawtool built from $GITHUB_SHA by CI. The Claude Code plugin downloads these; to build it yourself: cargo install --git https://github.com/$GH_REPO"
+          if gh release view build >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/build" -f sha="$GITHUB_SHA" -F force=true
+            gh release edit build --notes "$notes"
+          else
+            gh release create build --target "$GITHUB_SHA" --title "Latest build" --notes "$notes"
+          fi
+          gh release upload build dist/* --clobber

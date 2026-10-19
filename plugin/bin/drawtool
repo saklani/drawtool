@@ -1,0 +1,38 @@
+#!/bin/sh
+# drawtool for the Claude Code plugin. Plugin bin/ comes after the user's PATH,
+# so a drawtool they installed themselves wins and this runs only when there is
+# none: it fetches this platform's build from the `build` release once per
+# plugin version, then runs it.
+set -e
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) target=aarch64-apple-darwin ;;
+  Darwin-x86_64) target=x86_64-apple-darwin ;;
+  Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+  Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-musl ;;
+  *)
+    echo "drawtool: no prebuilt binary for $(uname -s) $(uname -m); build it with" \
+      "cargo install --git https://github.com/saklani/drawtool" >&2
+    exit 1
+    ;;
+esac
+
+# The plugin's own folder is named for its version, so an update fetches anew.
+version=$(basename "$(cd "$(dirname "$0")/.." && pwd)")
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/drawtool/$version"
+bin="$dir/drawtool"
+
+if [ ! -x "$bin" ]; then
+  base="${DRAWTOOL_DOWNLOAD:-https://github.com/saklani/drawtool/releases/download/build}"
+  mkdir -p "$dir"
+  if ! curl -fsSL "$base/drawtool-$target" -o "$bin.$$"; then
+    rm -f "$bin.$$"
+    echo "drawtool: couldn't download $base/drawtool-$target; build it with" \
+      "cargo install --git https://github.com/saklani/drawtool" >&2
+    exit 1
+  fi
+  chmod +x "$bin.$$"
+  mv "$bin.$$" "$bin"
+fi
+
+exec "$bin" "$@"

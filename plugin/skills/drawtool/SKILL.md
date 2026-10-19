@@ -53,7 +53,8 @@ Flags: `-d TD` to override direction, `-w N` column budget
 the next row, each edge crossing the break drawn as a line wrapping around (several nest without
 crossing). drawtool never switches to TD by itself; if it still can't
 fit, it prints a `note:` on stderr. Never paste that note into the reply.
-If `drawtool` isn't on PATH, use `~/.cargo/bin/drawtool`, or build it with
+This plugin puts `drawtool` on PATH (it downloads the binary on first use). If that fails, it
+says so on stderr; then use `~/.cargo/bin/drawtool`, or build it with
 `cargo install --git https://github.com/saklani/drawtool`.
 
 **Sequence diagrams:** when the question is about call order between components (request → API

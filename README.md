@@ -372,14 +372,17 @@ In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a cr
 
 ## Claude Code plugin
 
-The `drawtool` plugin (in `plugin/`) has two parts:
+The `drawtool` plugin (in `plugin/`) has three parts:
 
+- drawtool itself: on first use it downloads the prebuilt binary for your platform (macOS or
+  Linux, arm64 or x86-64) from the [`build` release](https://github.com/saklani/drawtool/releases/tag/build),
+  which CI rebuilds on every push that changes the crate. A `drawtool` already on your PATH wins.
 - a skill that teaches Claude Code to sketch diagrams with drawtool when you ask it to explain a
   dataflow or control flow
 - a display mod that shows each diagram in full where Claude ran it, under a short
   `drawtool (flowchart LR, N lines)` row, so Claude doesn't retype it into its reply
 
-Install drawtool first (above), then type at a Claude Code prompt:
+No separate install is needed. Type at a Claude Code prompt:
 
 ```
 /plugin install drawtool --marketplace saklani/drawtool

@@ -20,7 +20,7 @@ fn parse_picks_the_kind() {
     assert_eq!(kind("---\ntitle: Front matter\n---\nflowchart LR\na --> b"), "graph", "Mermaid decides, not drawtool");
     assert!(parse("%% only a comment\n").unwrap_err().message.starts_with("no diagram"));
     let err = parse("erDiagram\nA ||--o{ B : has").unwrap_err();
-    assert!(err.message.contains("doesn't draw `er`"), "{err}");
+    assert!(err.message.contains("`er` diagrams aren't supported yet"), "{err}");
 }
 
 #[test]

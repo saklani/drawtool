@@ -21,7 +21,7 @@ pub(crate) fn parse(text: &str) -> Result<RenderSemanticModel, Error> {
             "no diagram: the first line names it: `flowchart LR`, `stateDiagram-v2`, `sequenceDiagram` or `wireframe`",
         )),
         Err(merman_core::Error::UnsupportedDiagram { diagram_type }) => {
-            Err(Error::new(format!("drawtool doesn't draw `{diagram_type}` diagrams yet")))
+            Err(Error::new(format!("`{diagram_type}` diagrams aren't supported yet")))
         }
         Err(merman_core::Error::DiagramParse { diagnostic: d, .. }) => {
             // "Expected …" at the very end points past trailing blank lines: put it after the last text.

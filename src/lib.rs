@@ -59,7 +59,7 @@ pub fn parse(text: &str) -> Result<Diagram, Error> {
         RenderSemanticModel::Flowchart(m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
         RenderSemanticModel::State(m) => flowchart::state(&m, text).map(Diagram::Flowchart),
         RenderSemanticModel::Sequence(m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
-        _ => Err(Error::new("drawtool doesn't draw this kind of diagram yet")),
+        _ => Err(Error::new("this kind of diagram isn't supported yet")),
     }
 }
 

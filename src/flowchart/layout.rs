@@ -283,17 +283,25 @@ pub(crate) fn layers(graph: &Graph) -> Vec<usize> {
 
 /// Edge crossings between consecutive layers.
 fn crossings(layers: &[Vec<usize>], nodes: &[Node]) -> usize {
-    let mut total = 0;
-    for pair in layers.windows(2) {
-        let rank: HashMap<usize, usize> = pair[1].iter().enumerate().map(|(i, &v)| (v, i)).collect();
-        let rank = &rank;
-        let es: Vec<(usize, usize)> =
-            (pair[0].iter().enumerate()).flat_map(|(i, &u)| nodes[u].down.iter().map(move |v| (i, rank[v]))).collect();
-        for (i, a) in es.iter().enumerate() {
-            total += es[..i].iter().filter(|b| (a.0 < b.0) != (a.1 < b.1) && a.0 != b.0 && a.1 != b.1).count();
-        }
+    let pos = positions(layers, nodes.len());
+    let pairs = |lay: &Vec<usize>| (0..lay.len()).flat_map(move |i| lay[i + 1..].iter().map(move |&b| (lay[i], b))).collect::<Vec<_>>();
+    layers.iter().flat_map(pairs).map(|(a, b)| crossed(nodes, &pos, a, b, false)).sum()
+}
+
+/// Each node's place in its layer.
+fn positions(layers: &[Vec<usize>], n: usize) -> Vec<usize> {
+    let mut pos = vec![0; n];
+    for lay in layers {
+        lay.iter().enumerate().for_each(|(i, &v)| pos[v] = i);
     }
-    total
+    pos
+}
+
+/// Crossings among the edges of `a` and `b` with `a` placed first: below
+/// them, and above them too if `up`.
+fn crossed(nodes: &[Node], pos: &[usize], a: usize, b: usize, up: bool) -> usize {
+    let side = |na: &[usize], nb: &[usize]| na.iter().map(|&x| nb.iter().filter(|&&y| pos[x] > pos[y]).count()).sum::<usize>();
+    side(&nodes[a].down, &nodes[b].down) + if up { side(&nodes[a].up, &nodes[b].up) } else { 0 }
 }
 
 // ---- Layout -----------------------------------------------------------------
@@ -585,17 +593,8 @@ impl Layout {
     /// Swap neighbours in a layer (within a lane) while that lowers the
     /// crossings between their edges ("transpose", as in Graphviz dot).
     fn transpose(&mut self) {
-        let mut pos = vec![0; self.nodes.len()];
-        for lay in &self.layers {
-            lay.iter().enumerate().for_each(|(i, &v)| pos[v] = i);
-        }
-        // Crossings among the edges of `a` and `b` when `a` is placed first.
-        let cost = |nodes: &[Node], pos: &[usize], a: usize, b: usize| -> usize {
-            let side = |na: &[usize], nb: &[usize]| {
-                na.iter().map(|&x| nb.iter().filter(|&&y| pos[x] > pos[y]).count()).sum::<usize>()
-            };
-            side(&nodes[a].up, &nodes[b].up) + side(&nodes[a].down, &nodes[b].down)
-        };
+        let mut pos = positions(&self.layers, self.nodes.len());
+        let cost = |nodes: &[Node], pos: &[usize], a: usize, b: usize| crossed(nodes, pos, a, b, true);
         let mut improved = true;
         while improved {
             improved = false;

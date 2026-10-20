@@ -23,7 +23,7 @@ export const register: Register = on => {
     if (cmd === undefined || !DRAWTOOL.test(cmd)) return next(e)
     drawn.add(e.props.tool_use_id)
     const lines = cmd.split('\n')
-    const header = lines.find(l => /^\s*(flowchart|graph|sequenceDiagram|wireframe)\b/.test(l))?.trim()
+    const header = lines.find(l => /^\s*(flowchart|graph|stateDiagram(-v2)?|sequenceDiagram)\b/.test(l))?.trim()
     const short = `drawtool${header ? ` (${header}, ${lines.length - 2} lines)` : ''}`
     return next({ ...e, props: { ...e.props, input: { ...(e.props.input as object), command: short } } })
   })

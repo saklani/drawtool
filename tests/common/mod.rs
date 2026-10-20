@@ -2,7 +2,7 @@
 //! kind their source is.
 #![allow(dead_code)]
 
-use drawtool::{parse, Diagram, Error, Graph, Sequence, Wireframe};
+use drawtool::{parse, Diagram, Error, Graph, Sequence};
 
 pub fn graph(src: &str) -> Result<Graph, Error> {
     parse(src).map(|d| match d {
@@ -15,12 +15,5 @@ pub fn sequence(src: &str) -> Result<Sequence, Error> {
     parse(src).map(|d| match d {
         Diagram::Sequence(s) => s,
         other => panic!("not a sequence: {other:?}"),
-    })
-}
-
-pub fn wireframe(src: &str) -> Result<Wireframe, Error> {
-    parse(src).map(|d| match d {
-        Diagram::Wireframe(w) => w,
-        other => panic!("not a wireframe: {other:?}"),
     })
 }

@@ -9,14 +9,12 @@ fn parse_picks_the_kind() {
     let kind = |src: &str| match parse(src) {
         Ok(Diagram::Flowchart(_)) => "graph",
         Ok(Diagram::Sequence(_)) => "sequence",
-        Ok(Diagram::Wireframe(_)) => "wireframe",
         Err(e) => panic!("{src:?}: {e}"),
     };
     assert_eq!(kind("%% hi\n\nflowchart LR\na --> b"), "graph");
     assert_eq!(kind("graph TD\na --> b"), "graph");
     assert_eq!(kind("stateDiagram-v2\n[*] --> A"), "graph");
     assert_eq!(kind("  sequenceDiagram\na->>b: x"), "sequence");
-    assert_eq!(kind("Wireframe Home width=40"), "wireframe");
     assert_eq!(kind("---\ntitle: Front matter\n---\nflowchart LR\na --> b"), "graph", "Mermaid decides, not drawtool");
     assert!(parse("%% only a comment\n").unwrap_err().message.starts_with("no diagram"));
     let err = parse("erDiagram\nA ||--o{ B : has").unwrap_err();

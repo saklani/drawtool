@@ -43,7 +43,6 @@ pub struct Stroke {
 
 impl Stroke {
     pub const LIGHT: Stroke = Stroke::new(Weight::Light, Style::Solid);
-    pub const HEAVY: Stroke = Stroke::new(Weight::Heavy, Style::Solid);
     pub const DOTTED: Stroke = Stroke::new(Weight::Light, Style::Dotted);
 
     #[must_use]
@@ -269,7 +268,7 @@ mod tests {
     fn rounded_heavy_and_double_corners() {
         let corners = |stroke, corners| painted(|p| p.rect((0, 0), (3, 3), stroke, corners, Layer::Main));
         assert!(corners(Stroke::LIGHT, Corners::Round).starts_with('╭'));
-        assert!(corners(Stroke::HEAVY, Corners::Square).starts_with('┏'));
+        assert!(corners(Stroke::new(Weight::Heavy, Style::Solid), Corners::Square).starts_with('┏'));
         assert!(corners(Stroke::new(Weight::Double, Style::Solid), Corners::Square).starts_with('╔'));
     }
 

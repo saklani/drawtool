@@ -1,6 +1,6 @@
 # drawtool
 
-Render Mermaid flowcharts, state and sequence diagrams, and UI wireframes as box diagrams in the terminal. Left-to-right by default,
+Render Mermaid flowcharts, state and sequence diagrams as box diagrams in the terminal. Left-to-right by default,
 so a diagram reads like a sentence and fits on screen without scrolling.
 
 ```
@@ -251,75 +251,6 @@ ledger -->|ack| sync
                                 │           │
                                 └───────────┘
 ```
-
-## Wireframes
-
-Start with `wireframe [title]` to sketch a screen instead of a flow. Elements are one per
-line; `card`, `row` and `col` take indented children. Several `wireframe` blocks are drawn
-side by side (wrapping to the column budget), e.g. to show a flow or before/after states.
-
-```
-┌─ Add money ──────────────────────────┐   ┌─ Home ───────────────────────────────┐
-│ ← Back       Add money             ? │   │ ☰              Calm            Help │
-├──────────────────────────────────────┤   ├──────────────────────────────────────┤
-│                                      │   │ ┌─ Balance ────────────────────────┐ │
-│ Amount ($)                           │   │ │            $1,240.00             │ │
-│ ┌──────────────────────────────────┐ │   │ │ [ Add money ]           [ Send ] │ │
-│ │ 0.00                             │ │   │ └──────────────────────────────────┘ │
-│ └──────────────────────────────────┘ │   │   Activity     Cards      Rewards    │
-│ [ $20 ]        [ $50 ]      [ $100 ] │   │ ──━━━━━━━━────────────────────────── │
-│                                      │   │ • Coffee at Blue Bottle       -$4.50 │
-│ (•) Card   ( ) Bank                  │   │ • Salary from Acme        +$3,200.00 │
-│ Card                                 │   │ Round-up savings               (  ●) │
-│ ┌──────────────────────────────────┐ │   ├──────────────────────────────────────┤
-│ │ Visa •••• 4242                 ▾ │ │   │     Home        Pay       Profile    │
-│ └──────────────────────────────────┘ │   │     ━━━━                             │
-│ [x] Save for next time               │   └──────────────────────────────────────┘
-│                                      │
-│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
-│ ┃             Continue             ┃ │
-│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
-└──────────────────────────────────────┘
-```
-
-```
-wireframe Add money
-  header: ← Back | Add money | ?
-  spacer
-  input: Amount ($) = 0.00
-  row: [ $20 ] | [ $50 ] | [ $100 ]
-  spacer
-  radio: *Card | Bank
-  select: Card = Visa •••• 4242
-  checkbox: Save for next time = on
-  spacer
-  button: Continue
-
-wireframe Home
-  header: ☰ | Calm | Help
-  card Balance:
-    center: $1,240.00
-    row: [ Add money ] | [ Send ]
-  tabs: *Activity | Cards | Rewards
-  - Coffee at Blue Bottle | -$4.50
-  - Salary from Acme | +$3,200.00
-  toggle: Round-up savings = on
-  nav: *Home | Pay | Profile
-```
-
-| Element | Draws |
-|---|---|
-| `header: left \| centre \| right` | top bar with a divider under it |
-| `text:` / `center:` / `right:` / plain line | text (wrapped) |
-| `input: Label = placeholder`, `select: Label = value` | text field, dropdown |
-| `button: Label` | full-width primary button; `[ Label ]` inline in text is a small one |
-| `image: caption` | image placeholder |
-| `card Title:` / `row:` / `col:` | bordered group / side-by-side columns / stack |
-| `row: a \| b \| c` | inline columns (first left, last right, middle centred) |
-| `tabs: *A \| B`, `nav: *Home \| Pay` | tab bar / bottom navigation, `*` = active |
-| `toggle: Label = on`, `checkbox: Label = on`, `radio: *A \| B` | controls |
-| `- item \| right` | list item, optional right-aligned part |
-| `---`, `spacer` | divider, blank line |
 
 ## Syntax
 

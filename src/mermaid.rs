@@ -36,7 +36,7 @@ fn error(text: &str, e: compiler::Error) -> Error {
     match (e.code, e.r#type) {
         (compiler::Code::UnsupportedDiagram, Some(t)) => Error::new(format!("`{t}` diagrams aren't supported yet")),
         (compiler::Code::UnsupportedDiagram, None) => Error::new(
-            "no diagram: the first line names it: `flowchart LR`, `stateDiagram-v2`, `sequenceDiagram` or `wireframe`",
+            "no diagram: the first line names it: `flowchart LR`, `stateDiagram-v2` or `sequenceDiagram`",
         ),
         _ if e.line == 0 => Error::new(e.message),
         _ => {

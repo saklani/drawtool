@@ -1,4 +1,4 @@
-//! Render Mermaid diagrams and UI wireframes as box diagrams in the terminal.
+//! Render Mermaid diagrams as box diagrams in the terminal.
 //!
 //! ```
 //! let drawtool::Diagram::Flowchart(graph) = drawtool::parse("flowchart LR\na[build] --> b[ship]").unwrap() else {
@@ -9,9 +9,8 @@
 //! ```
 //!
 //! [`parse`] reads any diagram drawtool draws; each kind has its own fitter
-//! (`render_fit`, `render_sequence_fit`, `render_wireframe_fit`). The parsed
-//! data model is exported too, for callers that want to inspect or modify a
-//! diagram before drawing it.
+//! (`render_fit`, `render_sequence_fit`). The parsed data model is exported
+//! too, for callers that want to inspect or modify a diagram before drawing it.
 
 use std::fmt;
 
@@ -20,15 +19,12 @@ mod mermaid;
 mod paint;
 mod sequence;
 mod text;
-mod wireframe;
 
 pub use flowchart::{highlight, render, render_fit, wrap_labels};
 pub use flowchart::{Arrow, Direction, EdgeDef, Graph, Group, Mark, NodeDef, Shape, Style};
 pub use sequence::{render_sequence, render_sequence_fit};
 pub use sequence::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 pub use text::Fit;
-pub use wireframe::{render_wireframe, render_wireframe_fit};
-pub use wireframe::{Align, El, Screen, Wireframe, DEFAULT_WIDTH as WIREFRAME_WIDTH, MIN_WIDTH as WIREFRAME_MIN_WIDTH};
 
 /// A parsed diagram, by how drawtool draws it.
 #[derive(Debug, Clone)]
@@ -37,23 +33,15 @@ pub enum Diagram {
     Flowchart(Graph),
     /// A Mermaid sequence diagram.
     Sequence(Sequence),
-    /// drawtool's own screen mockup, which isn't Mermaid.
-    Wireframe(Wireframe),
 }
 
-/// Parse diagram source. Input whose first line (past blank lines and `%%`
-/// comments) starts with `wireframe` is a wireframe; anything else is Mermaid,
-/// and Mermaid decides its kind.
+/// Parse Mermaid source; Mermaid decides its kind.
 ///
 /// # Errors
 ///
 /// What Mermaid rejects, at the line and column it names; a kind of diagram
 /// drawtool doesn't draw yet; or what drawtool can't draw within a kind.
 pub fn parse(text: &str) -> Result<Diagram, Error> {
-    let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%"));
-    if first.is_some_and(|l| l.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("wireframe"))) {
-        return wireframe::parse_wireframe(text).map(Diagram::Wireframe);
-    }
     match mermaid::parse(text)? {
         ("flowchart", m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
         ("state", m) => flowchart::state(&m, text).map(Diagram::Flowchart),

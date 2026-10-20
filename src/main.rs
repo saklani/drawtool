@@ -1,6 +1,6 @@
 use clap::Parser;
 use drawtool::{highlight, parse, Diagram, Direction, Fit};
-use drawtool::{render_fit, render_sequence_fit, render_wireframe_fit};
+use drawtool::{render_fit, render_sequence_fit};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
@@ -27,15 +27,9 @@ Two comment lines drawtool reads (Mermaid ignores them):
 `%% stack: a b c` draws those boxes in one column, in that order (in TD, one row),
 joined by short straight arrows: side effects under the step that causes them, or
 a pair that talks both ways.
-
-Wireframes are drawtool's own, not Mermaid (start with `wireframe [title] [width=N]`,
-indent children):
-  header: ← Back | Title | ?    input: Email = you@x.com   button: Continue
-  card Title:  row:  col:       tabs: *A | B   nav: *Home | Pay
-  - item | $4.50                toggle: Wi-Fi = on   checkbox: x = on   radio: *a | b
 ";
 
-/// Render Mermaid flowcharts, state and sequence diagrams, and UI wireframes in the terminal.
+/// Render Mermaid flowcharts, state and sequence diagrams in the terminal.
 #[derive(Parser)]
 #[command(version, after_help = SYNTAX)]
 struct Args {
@@ -87,7 +81,6 @@ fn run(args: &Args, max_width: usize) -> Result<Fit, Box<dyn std::error::Error>>
         return Err("highlighting only works on flowcharts and state diagrams".into());
     }
     Ok(match diagram {
-        Diagram::Wireframe(w) => render_wireframe_fit(&w, max_width),
         Diagram::Sequence(s) => render_sequence_fit(&s, max_width),
         Diagram::Flowchart(mut graph) => {
             highlight(&mut graph, &args.highlight)?;

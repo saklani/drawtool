@@ -50,10 +50,6 @@ drawtool's own additions, which Mermaid reads as comments:
 | `%% highlight: a, b, c` | draw that path thick (the branch a request takes, where a bug is) |
 | `%% stack: save cache audit` | those boxes in one column, joined by short straight arrows: side effects (cache, log, metrics) under the step that causes them, or a pair that talks both ways (push/ack) instead of a line running back through the layers |
 
-For "what does this screen look like" (UI code, a component tree, a design discussion), draw a
-`wireframe`, drawtool's own format: `wireframe Title` then indented `header:`, `input:`,
-`button:`, `card X:`, `row:`, `- item | $1` (see the README). Several screens side by side show a flow.
-
 Flags: `-d TD` to override direction, `-w N` column budget (default 120 when run by Claude). A
 too-wide LR diagram gets its labels wrapped, then continues on the next row, each edge crossing
 the break drawn as a line wrapping around (several nest without crossing). drawtool never

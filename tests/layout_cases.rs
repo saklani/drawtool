@@ -59,7 +59,6 @@ fn ondine_layout_cases_draw_and_score_no_worse() {
                         texts
                     }
                     Diagram::Sequence(s) => vec![render_sequence_fit(&s, 120).text],
-                    Diagram::Wireframe(_) => unreachable!(),
                 };
                 for text in texts {
                     score(&text, &mut total);

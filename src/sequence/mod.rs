@@ -7,9 +7,8 @@
 
 use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
+use crate::mermaid;
 use crate::Style;
-use crate::mermaid::{get, list};
-use serde_json::Value;
 
 #[derive(Clone, Debug)]
 pub struct Participant {
@@ -84,15 +83,15 @@ fn text_lines(text: &str) -> Vec<String> {
 }
 
 /// A Mermaid `sequenceDiagram` as a sequence.
-pub(crate) fn sequence(m: &Value) -> Sequence {
-    let participants: Vec<Participant> = (list(&m["actors"]).iter())
-        .map(|a| Participant { id: get(a, "id").into(), lines: text_lines(get(a, "description")), actor: get(a, "type") == "actor" })
+pub(crate) fn sequence(m: &mermaid::Sequence) -> Sequence {
+    let participants: Vec<Participant> = (m.actors.iter())
+        .map(|a| Participant { id: a.id.clone(), lines: text_lines(&a.description), actor: a.kind == "actor" })
         .collect();
     let at = |id: &str| participants.iter().position(|a| a.id == id);
     let titled = |keyword: &str, text: &str| if text.trim().is_empty() { keyword.to_string() } else { format!("{keyword} {}", text.trim()) };
     let mut items = Vec::new();
-    for msg in list(&m["messages"]) {
-        let (t, text) = (msg["type"].as_i64().unwrap_or(-1), get(msg, "message"));
+    for msg in &m.messages {
+        let (t, text) = (msg.kind.unwrap_or(-1), msg.message.as_str());
         let item = if let Some(&(_, keyword)) = FRAMES.iter().find(|f| f.0 == t) {
             // A `rect`'s text is just its colour.
             Item::Start(if keyword == "rect" { keyword.to_string() } else { titled(keyword, text) })
@@ -100,11 +99,11 @@ pub(crate) fn sequence(m: &Value) -> Sequence {
             Item::Divider(titled(keyword, text))
         } else if ENDS.contains(&t) {
             Item::End
-        } else if let (Some(a), Some(z)) = (at(get(msg, "from")), at(get(msg, "to"))) {
+        } else if let (Some(a), Some(z)) = (at(msg.from.as_deref().unwrap_or_default()), at(msg.to.as_deref().unwrap_or_default())) {
             let lines = text_lines(text);
             match t {
                 2 => {
-                    let side = [NoteSide::Left, NoteSide::Right].get(msg["placement"].as_u64().unwrap_or(2) as usize).copied();
+                    let side = [NoteSide::Left, NoteSide::Right].get(msg.placement.unwrap_or(2)).copied();
                     Item::Note(Note { side: side.unwrap_or(NoteSide::Over), first: a.min(z), last: a.max(z), lines })
                 }
                 0 | 1 | 3..=6 | 24 | 25 => {

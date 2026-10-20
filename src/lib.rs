@@ -43,10 +43,9 @@ pub enum Diagram {
 /// drawtool doesn't draw yet; or what drawtool can't draw within a kind.
 pub fn parse(text: &str) -> Result<Diagram, Error> {
     match mermaid::parse(text)? {
-        ("flowchart", m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
-        ("state", m) => flowchart::state(&m, text).map(Diagram::Flowchart),
-        ("sequence", m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
-        (t, _) => Err(Error::new(format!("`{t}` diagrams aren't supported yet"))),
+        mermaid::Model::Flowchart(m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
+        mermaid::Model::State(m) => flowchart::state(&m, text).map(Diagram::Flowchart),
+        mermaid::Model::Sequence(m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
     }
 }
 

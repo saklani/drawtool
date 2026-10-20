@@ -1,7 +1,8 @@
 # Builds drawtool for each platform the Claude Code plugin supports and puts
-# the binaries on the release for the crate's version (v<version> from
-# Cargo.toml, holding that version's latest build), marked latest, which
-# plugin/bin/drawtool downloads from.
+# the binaries on a new release for the crate's version (v<version> from
+# Cargo.toml), marked latest, which plugin/bin/drawtool downloads from.
+# A version that already has a release is left as it is: bump the version
+# to release.
 name: binaries
 
 on:
@@ -49,14 +50,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Point the version's release at this commit and replace its binaries
+      - name: Release the version, unless it already has a release
         run: |
           tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          notes="drawtool built from $GITHUB_SHA by CI. The Claude Code plugin downloads these; to build it yourself: cargo install --git https://github.com/$GH_REPO"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true
-            gh release edit "$tag" --notes "$notes" --latest
-          else
-            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes "$notes" --latest
+            echo "$tag is already released; bump the version in Cargo.toml to release this build"
+            exit 0
           fi
-          gh release upload "$tag" dist/* --clobber
+          notes="drawtool built from $GITHUB_SHA by CI. The Claude Code plugin downloads these; to build it yourself: cargo install --git https://github.com/$GH_REPO"
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "$tag" --notes "$notes" --latest

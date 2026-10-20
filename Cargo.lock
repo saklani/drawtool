@@ -120,7 +120,7 @@ source = "git+https://github.com/wevm/ondine?rev=7c00ceaf942dd67514d1f8dd58a8550
 
 [[package]]
 name = "drawtool"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "compiler",

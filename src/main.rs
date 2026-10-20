@@ -12,9 +12,8 @@ Input is standard Mermaid, read by Mermaid's own grammar. drawtool draws:
   stateDiagram-v2      as a flowchart; add `direction LR` for left-to-right
   sequenceDiagram      (-d is ignored)
 RL and BT are drawn as LR and TD. Not drawn yet: other kinds of diagram and edges
-to a subgraph. Shapes are
-drawn as the nearest of box, rounded, decision and database. A %% comment goes
-on its own line.
+to a subgraph. Shapes are drawn as the nearest of box, rounded, decision and
+database. A %% comment goes on its own line.
 
 Two comment lines drawtool reads (Mermaid ignores them):
   flowchart LR

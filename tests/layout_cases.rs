@@ -70,7 +70,7 @@ fn ondine_layout_cases_draw_and_score_no_worse() {
     }
     eprintln!("{count} drawings: {total:?}");
     // Lower these as layouts improve.
-    let baseline = Score { crossings: 264, arrow_tees: 4, cells: 129_924 };
+    let baseline = Score { crossings: 263, arrow_tees: 4, cells: 129_745 };
     assert!(total.crossings <= baseline.crossings, "more crossings: {total:?}");
     assert!(total.arrow_tees <= baseline.arrow_tees, "more arrows into junctions: {total:?}");
     assert!(total.cells * 100 <= baseline.cells * 105, "drawings over 5% bigger: {total:?}");

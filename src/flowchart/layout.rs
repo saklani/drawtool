@@ -864,6 +864,7 @@ impl Layout {
         }
         // Pushing a lane can run it into another lane's dummies in a shared layer.
         self.pack();
+        self.align();
         // Rows one under another, with a line between them per edge wrapping.
         let mut bottom = 0;
         for r in 0..self.rows.len() {
@@ -877,6 +878,33 @@ impl Layout {
             }
             bottom = hi + top - lo;
             self.row_span.push((top, bottom));
+        }
+    }
+
+    /// Line each label and bend up with one end of its edge, as Ondine's
+    /// `align_labels` does, where its layer has room: the edge then turns
+    /// once instead of twice.
+    fn align(&mut self) {
+        for k in 0..self.layers.len() {
+            for i in 0..self.layers[k].len() {
+                let (lay, v) = (&self.layers[k], self.layers[k][i]);
+                let nd = &self.nodes[v];
+                if nd.kind == Kind::Boxes || nd.up.len() != 1 || nd.down.len() != 1 {
+                    continue;
+                }
+                // Clear of its neighbours, and of their frames when in another lane.
+                let margin = |w: usize| if self.lane_of[w] == self.lane_of[v] { 0 } else { 2 * FRAME };
+                let lo = i.checked_sub(1).map_or(i64::MIN, |j| {
+                    let p = lay[j];
+                    self.nodes[p].pos + self.nodes[p].csize + self.space(p, Some(&v)) + margin(p)
+                });
+                let hi = lay.get(i + 1).map_or(i64::MAX, |&q| self.nodes[q].pos - self.space(v, Some(&q)) - margin(q) - nd.csize);
+                let off = self.cen(v) - nd.pos;
+                let ends = [nd.up[0], nd.down[0]].map(|m| self.cen(m) - off);
+                if let Some(p) = ends.into_iter().filter(|p| (lo..=hi).contains(p)).min_by_key(|p| (p - nd.pos).abs()) {
+                    self.nodes[v].pos = p;
+                }
+            }
         }
     }
 

@@ -126,7 +126,7 @@ fn headers_comments_and_ignored_lines() {
         assert_eq!(graph(src).unwrap().direction, dir, "{src:?}");
     }
     let g =
-        graph("%% a comment\nflowchart LR\na --> b %% trailing\nclassDef x fill:#f00\nclass a x\nb --> c;").unwrap();
+        graph("%% a comment\nflowchart LR\na --> b\n  %% indented\nclassDef x fill:#f00\nclass a x\nb --> c;").unwrap();
     assert_eq!((g.g.node_count(), g.g.edge_count()), (3, 2));
     // As in Mermaid, `style` declares the node it styles.
     assert_eq!(graph("flowchart LR\na --> b\nstyle c fill:#0f0").unwrap().g.node_count(), 3);
@@ -139,7 +139,7 @@ fn the_header_is_required_and_comes_once() {
     let message = |src: &str| graph(src).unwrap_err().to_string();
     assert!(message("a --> b").contains("no diagram"), "{}", message("a --> b"));
     assert!(message("%% only a comment").contains("no diagram"));
-    assert!(message("flowchart LR\na\nflowchart TD").starts_with("line 3, column 1: unexpected flowchart"));
+    assert!(message("flowchart LR\na\nflowchart TD").starts_with("line 3, column 1: unexpected"));
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn errors_point_at_line_and_column() {
     assert_eq!(at("a --> b\n  b ~~> c"), (Some(3), Some(5)));
     assert_eq!(at("a --> "), (Some(2), Some(6)), "an expected node goes where the text ends");
     assert_eq!(at("a --> b\nb -->\n\n"), (Some(3), Some(6)), "not on a trailing blank line");
-    assert_eq!(at("a[unclosed --> b"), (Some(2), Some(2)));
+    assert_eq!(at("a[unclosed --> b"), (Some(2), Some(17)), "Mermaid reads to the end of the line");
     let e = graph("flowchart LR\nsubgraph s [S]\na").unwrap_err();
     assert_eq!((e.line, e.message.as_str()), (Some(2), "`subgraph` is never closed with `end`"));
     let e = graph("flowchart LR\nloop --> b\nc -->").unwrap_err();

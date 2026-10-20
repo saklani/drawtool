@@ -13,7 +13,7 @@
 //! data model is exported too, for callers that want to inspect or modify a
 //! diagram before drawing it.
 
-use merman_core::RenderSemanticModel;
+use mermaid::Model;
 use std::fmt;
 
 mod flowchart;
@@ -56,10 +56,9 @@ pub fn parse(text: &str) -> Result<Diagram, Error> {
         return wireframe::parse_wireframe(text).map(Diagram::Wireframe);
     }
     match mermaid::parse(text)? {
-        RenderSemanticModel::Flowchart(m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
-        RenderSemanticModel::State(m) => flowchart::state(&m, text).map(Diagram::Flowchart),
-        RenderSemanticModel::Sequence(m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
-        _ => Err(Error::new("this kind of diagram isn't supported yet")),
+        Model::Flowchart(m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
+        Model::State(m) => flowchart::state(&m, text).map(Diagram::Flowchart),
+        Model::Sequence(m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
     }
 }
 

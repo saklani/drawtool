@@ -333,7 +333,7 @@ wireframe Home
 ## Syntax
 
 Input is standard Mermaid: drawtool parses it with Mermaid's own grammar
-([merman-core](https://crates.io/crates/merman-core), a Rust port that tracks mermaid.js) and draws it
+([Ondine](https://github.com/wevm/ondine)'s Rust port of mermaid.js) and draws it
 with its own layout. If Mermaid accepts a diagram, drawtool reads it the same way, and errors point at
 the line and column Mermaid names.
 

@@ -1,4 +1,4 @@
-//! Sequence diagrams: Mermaid's `sequenceDiagram`, parsed by merman-core.
+//! Sequence diagrams: Mermaid's `sequenceDiagram`, parsed by Ondine.
 //!
 //! Participants sit in a row with lifelines running down; each message is a
 //! label row above a horizontal arrow. Columns are spaced so every label fits
@@ -9,7 +9,7 @@ use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
 use crate::Error;
 use crate::Style;
-use merman_core::diagrams::sequence::SequenceDiagramRenderModel;
+use crate::mermaid::Sequence as Model;
 
 #[derive(Clone, Debug)]
 pub struct Participant {
@@ -129,20 +129,17 @@ fn text_lines(text: &str) -> Vec<String> {
 }
 
 /// A Mermaid `sequenceDiagram` as a sequence.
-pub(crate) fn sequence(m: &SequenceDiagramRenderModel) -> Sequence {
+pub(crate) fn sequence(m: &Model) -> Sequence {
     let participants: Vec<Participant> = m
-        .actor_order
+        .actors
         .iter()
-        .map(|id| {
-            let a = &m.actors[id];
-            Participant { id: id.clone(), lines: text_lines(&a.description), actor: a.actor_type == "actor" }
-        })
+        .map(|a| Participant { id: a.id.clone(), lines: text_lines(&a.description), actor: a.kind == "actor" })
         .collect();
-    let at = |id: &Option<String>| id.as_ref().and_then(|id| m.actor_order.iter().position(|a| a == id));
+    let at = |id: &Option<String>| id.as_ref().and_then(|id| m.actors.iter().position(|a| &a.id == id));
     let titled = |keyword: &str, text: &str| if text.trim().is_empty() { keyword.to_string() } else { format!("{keyword} {}", text.trim()) };
     let mut items = Vec::new();
     for msg in &m.messages {
-        let (t, text) = (msg.message_type, msg.message_text());
+        let (t, text) = (msg.kind.unwrap_or(-1), msg.message.as_str().unwrap_or_default());
         let item = if let Some(&(_, keyword)) = FRAMES.iter().find(|f| f.0 == t) {
             // A `rect`'s text is just its colour.
             Item::Start(if keyword == "rect" { keyword.to_string() } else { titled(keyword, text) })

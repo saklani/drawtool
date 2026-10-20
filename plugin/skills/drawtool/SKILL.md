@@ -34,8 +34,10 @@ Write standard Mermaid; drawtool reads it with Mermaid's own grammar. It draws:
 - `stateDiagram-v2` with `direction LR`: state machines and lifecycles (`[*]`, `<<choice>>`,
   `note`, composite `state X { }`).
 - `sequenceDiagram`: call order between components (request → API → vendor → webhook → DB →
-  client polls). Every message needs text (`a->>b: call`), and a `%%` comment goes on its own
-  line (at the end of a line it becomes part of the label).
+  client polls). Every message needs text (`a->>b: call`).
+
+In every kind, a `%%` comment goes on its own line: after an edge it's an error, after a message
+it becomes part of the label.
 
 Not drawn yet: other kinds (class, ER, ...), `RL`/`BT`, and edges to a subgraph; drawtool says so.
 Shapes are drawn as the nearest of box, rounded, decision and database.

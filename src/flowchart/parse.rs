@@ -1,11 +1,9 @@
-//! Flowcharts: standard Mermaid, parsed by merman-core and converted to the
+//! Flowcharts: standard Mermaid, parsed by Ondine and converted to the
 //! graph drawtool lays out.
 
 use super::model::{Arrow, Direction, EdgeDef, Graph, Group, NodeDef, Shape, Style};
-use crate::mermaid::label;
+use crate::mermaid::{label, Flowchart, State};
 use crate::Error;
-use merman_core::diagrams::flowchart::{FlowEdgeMarker, FlowEdgeStroke, FlowEdgeVisibility, FlowchartModel};
-use merman_core::diagrams::state::StateDiagramRenderModel;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +12,7 @@ fn shape(name: &str) -> Shape {
     match name {
         n if n.contains("cyl") || n == "database" || n == "db" => Shape::Database,
         "diamond" | "diam" | "decision" | "question" | "hexagon" | "hex" | "prepare" => Shape::Decision,
-        "roundedRect" | "rounded" | "event" | "stadium" | "pill" | "terminal" | "circle" | "circ" | "doublecircle"
+        "round" | "roundedRect" | "rounded" | "event" | "stadium" | "pill" | "terminal" | "circle" | "circ" | "doublecircle"
         | "dbl-circ" | "double-circle" | "start" | "stop" => Shape::Round,
         _ => Shape::Box,
     }
@@ -28,7 +26,7 @@ fn shape(name: &str) -> Shape {
 /// What drawtool can't draw yet: a reversed direction (`RL`, `BT`) or an
 /// edge to a subgraph. Also a `%% highlight:` or `%% stack:` line that names
 /// a missing node.
-pub(crate) fn flowchart(m: &FlowchartModel, text: &str) -> Result<Graph, Error> {
+pub(crate) fn flowchart(m: &Flowchart, text: &str) -> Result<Graph, Error> {
     let direction = match m.direction.as_deref().unwrap_or("TB") {
         "LR" => Direction::LR,
         "TB" | "TD" => Direction::TD,
@@ -49,20 +47,20 @@ pub(crate) fn flowchart(m: &FlowchartModel, text: &str) -> Result<Graph, Error> 
 /// # Errors
 ///
 /// A bad `%% highlight:` / `%% stack:` line.
-pub(crate) fn state(m: &StateDiagramRenderModel, text: &str) -> Result<Graph, Error> {
+pub(crate) fn state(m: &State, text: &str) -> Result<Graph, Error> {
     let direction = if m.direction == "LR" { Direction::LR } else { Direction::TD };
     let (mut g, mut groups, mut index) = (DiGraph::new(), Vec::new(), HashMap::new());
     let mut group_of = HashMap::new();
-    for n in m.nodes.iter().filter(|n| n.shape != "noteGroup") {
-        let text = n.label.as_ref().and_then(|l| l.as_str()).unwrap_or(&n.id);
-        let (lines, shape) = match n.shape.as_str() {
+    for n in m.graph.nodes.iter().filter(|n| n.shape.as_deref() != Some("noteGroup")) {
+        let text = n.label.as_deref().unwrap_or(&n.id);
+        let (lines, shape) = match n.shape.as_deref().unwrap_or_default() {
             "stateStart" => (vec!["●".to_string()], Shape::Round),
             "stateEnd" => (vec!["◉".to_string()], Shape::Round),
             "choice" => (vec![String::new()], Shape::Decision),
             _ => {
                 let mut lines = label(text, false);
-                lines.extend(n.description.iter().flatten().flat_map(|d| label(d, false)));
-                (lines, if n.shape == "note" { Shape::Box } else { Shape::Round })
+                lines.extend(n.description.iter().flat_map(|d| label(d, false)));
+                (lines, if n.shape.as_deref() == Some("note") { Shape::Box } else { Shape::Round })
             }
         };
         if n.is_group {
@@ -72,14 +70,14 @@ pub(crate) fn state(m: &StateDiagramRenderModel, text: &str) -> Result<Graph, Er
         index.insert(n.id.as_str(), g.add_node(NodeDef::new(&n.id, lines, shape)));
     }
     // A composite state's own box goes in its frame, with the states inside it.
-    for n in &m.nodes {
+    for n in &m.graph.nodes {
         let frame = if n.is_group { Some(n.id.as_str()) } else { n.parent_id.as_deref() };
         if let (Some(&v), Some(&grp)) = (index.get(n.id.as_str()), frame.and_then(|p| group_of.get(p))) {
             g[v].group = Some(grp);
         }
     }
-    for e in m.edges.iter().filter(|e| index.contains_key(e.start.as_str()) && index.contains_key(e.end.as_str())) {
-        let note = e.arrow_type_end.is_empty();
+    for e in m.graph.edges.iter().filter(|e| index.contains_key(e.start.as_str()) && index.contains_key(e.end.as_str())) {
+        let note = e.pattern.is_some();
         let label = Some(label(&e.label, false)).filter(|l| l.iter().any(|s| !s.is_empty()));
         let (style, arrow) = if note { (Style::Dotted, Arrow::None) } else { (Style::Solid, Arrow::End) };
         g.add_edge(index[e.start.as_str()], index[e.end.as_str()], EdgeDef { label, style, arrow });
@@ -89,16 +87,16 @@ pub(crate) fn state(m: &StateDiagramRenderModel, text: &str) -> Result<Graph, Er
     Ok(graph)
 }
 
-fn convert(m: &FlowchartModel) -> Result<(DiGraph<NodeDef, EdgeDef>, Vec<Group>), Error> {
+fn convert(m: &Flowchart) -> Result<(DiGraph<NodeDef, EdgeDef>, Vec<Group>), Error> {
     let sub_ids: HashSet<&str> = m.subgraphs.iter().map(|s| s.id.as_str()).collect();
     let mut g = DiGraph::new();
     let mut index = HashMap::new();
-    for n in &m.nodes {
+    for n in m.nodes.values() {
         if sub_ids.contains(n.id.as_str()) {
             return Err(Error::new(format!("`{}` is a subgraph: edges to subgraphs aren't supported yet", n.id)));
         }
-        let lines = label(n.label.as_deref().unwrap_or(&n.id), n.label_type.as_deref() == Some("markdown"));
-        let node = NodeDef::new(&n.id, lines, shape(n.layout_shape.as_deref().unwrap_or_default()));
+        let lines = label(n.text.as_deref().unwrap_or(&n.id), n.label_type == "markdown");
+        let node = NodeDef::new(&n.id, lines, shape(n.shape.as_deref().unwrap_or_default()));
         index.insert(n.id.as_str(), g.add_node(node));
     }
     // Mermaid lists subgraphs innermost first, so the first to list a node owns it.
@@ -110,20 +108,20 @@ fn convert(m: &FlowchartModel) -> Result<(DiGraph<NodeDef, EdgeDef>, Vec<Group>)
         }
     }
     let groups = m.subgraphs.iter().map(|s| Group { title: label(&s.title, false).join(" ") }).collect();
-    for e in m.edges.iter().filter(|e| e.visibility == FlowEdgeVisibility::Visible) {
-        let style = match e.stroke_kind {
-            FlowEdgeStroke::Normal => Style::Solid,
-            FlowEdgeStroke::Dotted => Style::Dotted,
-            FlowEdgeStroke::Thick => Style::Thick,
+    for e in m.edges.iter().filter(|e| e.stroke.as_deref() != Some("invisible")) {
+        let style = match e.stroke.as_deref() {
+            Some("dotted") => Style::Dotted,
+            Some("thick") => Style::Thick,
+            _ => Style::Solid,
         };
-        let arrow = match (e.start_marker, e.end_marker) {
-            (FlowEdgeMarker::None, FlowEdgeMarker::None) => Arrow::None,
-            (FlowEdgeMarker::None, _) => Arrow::End,
-            _ => Arrow::Both,
+        let arrow = match e.arrow.as_deref().unwrap_or_default() {
+            "arrow_open" => Arrow::None,
+            a if a.starts_with("double_") => Arrow::Both,
+            _ => Arrow::End,
         };
-        let text = e.label.as_deref().filter(|l| !l.trim().is_empty());
-        let label = text.map(|l| label(l, e.label_type.as_deref() == Some("markdown")));
-        g.add_edge(index[e.from.as_str()], index[e.to.as_str()], EdgeDef { label, style, arrow });
+        let text = Some(e.text.as_str()).filter(|l| !l.trim().is_empty());
+        let label = text.map(|l| label(l, e.label_type == "markdown"));
+        g.add_edge(index[e.start.as_str()], index[e.end.as_str()], EdgeDef { label, style, arrow });
     }
     Ok((g, groups))
 }

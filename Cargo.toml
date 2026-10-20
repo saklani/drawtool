@@ -6,7 +6,10 @@ description = "Render Mermaid-style flowcharts as box diagrams in the terminal"
 license = "MIT"
 
 [dependencies]
-merman-core = { version = "=0.9.1", default-features = false, features = ["diagram-flowchart", "diagram-sequence", "diagram-state"] }
+compiler = { git = "https://github.com/wevm/ondine", rev = "7c00ceaf942dd67514d1f8dd58a8550e444f7047", default-features = false, features = ["flowchart", "sequence", "state", "model"] }
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 petgraph = { version = "0.8", default-features = false, features = ["std"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode"] }

@@ -39,7 +39,8 @@ Write standard Mermaid; drawtool reads it with Mermaid's own grammar. It draws:
 In every kind, a `%%` comment goes on its own line: after an edge it's an error, after a message
 it becomes part of the label.
 
-Not drawn yet: other kinds (class, ER, ...), `RL`/`BT`, and edges to a subgraph; drawtool says so.
+`RL`/`BT` are drawn as LR/TD. Not drawn yet: other kinds (class, ER, ...) and edges to a subgraph;
+drawtool says so.
 Shapes are drawn as the nearest of box, rounded, decision and database.
 
 drawtool's own additions, which Mermaid reads as comments:

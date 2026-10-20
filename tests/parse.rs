@@ -164,8 +164,8 @@ fn errors_point_at_line_and_column() {
 #[test]
 fn standard_mermaid_parses_and_what_drawtool_cannot_draw_yet_is_an_error() {
     let message = |src: &str| graph(src).unwrap_err().to_string();
-    assert!(message("flowchart RL\na --> b").contains("`RL` isn't supported yet"));
-    assert!(message("flowchart BT\na --> b").contains("`BT` isn't supported yet"));
+    assert_eq!(graph("flowchart RL\na --> b").unwrap().direction, Direction::LR, "RL is drawn as LR");
+    assert_eq!(graph("flowchart BT\na --> b").unwrap().direction, Direction::TD, "BT is drawn as TD");
     assert!(message("flowchart LR\nsubgraph S\nx\nend\nS --> y").contains("edges to subgraphs"));
     for src in ["a --o b", "a --x b", "a ~~~ b", "a o--o b", "a@{ shape: cyl, label: \"db\" } --> b"] {
         assert!(graph(&format!("flowchart LR\n{src}")).is_ok(), "{src:?}");

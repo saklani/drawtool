@@ -362,8 +362,8 @@ Paid --> [*]
 
 Mermaid's shapes are drawn as the nearest of box, rounded, decision and database. Styling
 (`classDef`, `style`, `:::class`, `linkStyle`, `click`) doesn't change the drawing, and nested
-subgraphs are flattened. Not drawn yet, and reported as such: other kinds of diagram, `RL`/`BT`
-directions, and edges to a subgraph. Two comment lines are drawtool's own, and plain comments to
+subgraphs are flattened. `RL` and `BT` are drawn as LR and TD.
+Not drawn yet, and reported as such: other kinds of diagram and edges to a subgraph. Two comment lines are drawtool's own, and plain comments to
 Mermaid: `%% highlight: a, b` and `%% stack: a b`.
 
 In the output, `┼` `├` `┬` are joins (the lines connect); `╂` marks a crossing (they don't).

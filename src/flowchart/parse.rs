@@ -23,14 +23,13 @@ fn shape(name: &str) -> Shape {
 ///
 /// # Errors
 ///
-/// What drawtool can't draw yet: a reversed direction (`RL`, `BT`) or an
-/// edge to a subgraph. Also a `%% highlight:` or `%% stack:` line that names
+/// What drawtool can't draw yet: an edge to a subgraph. Also a `%% highlight:` or `%% stack:` line that names
 /// a missing node.
 pub(crate) fn flowchart(m: &Flowchart, text: &str) -> Result<Graph, Error> {
     let direction = match m.direction.as_deref().unwrap_or("TB") {
-        "LR" => Direction::LR,
-        "TB" | "TD" => Direction::TD,
-        d => return Err(Error::new(format!("`{d}` isn't supported yet: use LR or TD"))),
+        // Drawn the usual way round: right-to-left and bottom-to-top read the same.
+        "LR" | "RL" => Direction::LR,
+        _ => Direction::TD,
     };
     let (g, groups) = convert(m)?;
     let mut graph = Graph { direction, g, groups, stacks: Vec::new() };

@@ -214,7 +214,7 @@ fn layering(n: usize, edges: &[(usize, usize, usize)], rev: &[bool]) -> Vec<usiz
     }
     assert_eq!(order.len(), n, "without back edges and self-loops the graph is acyclic");
     for &v in order.iter().rev().filter(|&&v| forward.iter().all(|e| e.1 != v)) {
-        let child = |e: &(usize, usize, usize)| if e.2 == 2 { layer[v] + 1 } else { layer[e.1] };
+        let child = |e: &(usize, usize, usize)| if e.2 > 1 { layer[v] + 1 } else { layer[e.1] };
         if let Some(nearest) = forward.iter().filter(|e| e.0 == v).map(child).min() {
             layer[v] = nearest - 1;
         }
@@ -246,7 +246,9 @@ fn back_edges(n: usize, edges: &[(usize, usize)]) -> Vec<bool> {
     back
 }
 
-/// Each graph node's layer. A stack counts as one node.
+/// Each graph node's layer. A stack counts as one node, and a subgraph is
+/// laid out as one (as Ondine's compound layout does), so its frame spans
+/// only the layers its own boxes need.
 pub(crate) fn layers(graph: &Graph) -> Vec<usize> {
     let n = graph.g.node_count();
     let mut unit: Vec<usize> = (0..n).collect();
@@ -255,14 +257,25 @@ pub(crate) fn layers(graph: &Graph) -> Vec<usize> {
             unit[v.index()] = st[0].index();
         }
     }
-    let ends: Vec<(usize, usize)> =
-        graph.g.edge_references().map(|e| (unit[e.source().index()], unit[e.target().index()])).collect();
-    let rev = back_edges(n, &ends);
-    let spans: Vec<(usize, usize, usize)> = (ends.iter().zip(graph.g.edge_weights()))
-        .map(|(&(s, t), e)| (s, t, 1 + usize::from(e.label.is_some())))
+    let spans: Vec<(usize, usize, usize)> = (graph.g.edge_references())
+        .map(|e| (unit[e.source().index()], unit[e.target().index()], 1 + usize::from(e.weight().label.is_some())))
         .collect();
-    let layer = layering(n, &spans, &rev);
-    unit.iter().map(|&u| layer[u]).collect()
+    let layer_all = |n: usize, edges: &[(usize, usize, usize)]| {
+        let ends: Vec<(usize, usize)> = edges.iter().map(|e| (e.0, e.1)).collect();
+        layering(n, edges, &back_edges(n, &ends))
+    };
+    // Inside each subgraph, over its own edges; then each subgraph as one node.
+    let outer = |v: usize| graph.g[petgraph::graph::NodeIndex::new(v)].group.map_or(v, |g| n + g);
+    let inner = layer_all(n, &spans.iter().filter(|e| outer(e.0) == outer(e.1) && outer(e.0) >= n).copied().collect::<Vec<_>>());
+    let cross: Vec<&(usize, usize, usize)> = spans.iter().filter(|e| outer(e.0) != outer(e.1)).collect();
+    let ends: Vec<(usize, usize)> = cross.iter().map(|e| (outer(e.0), outer(e.1))).collect();
+    let units = n + graph.groups.len();
+    // An edge out of a subgraph starts past the box it leaves.
+    let oriented: Vec<_> = (cross.iter().zip(back_edges(units, &ends)))
+        .map(|(&&(s, t, span), r)| if r { (outer(t), outer(s), span + inner[t]) } else { (outer(s), outer(t), span + inner[s]) })
+        .collect();
+    let top = layering(units, &oriented, &vec![false; oriented.len()]);
+    unit.iter().map(|&u| top[outer(u)] + inner[u]).collect()
 }
 
 /// Edge crossings between consecutive layers.
@@ -474,7 +487,8 @@ impl Layout {
         let ends: Vec<(usize, usize)> = (graph.g.edge_references())
             .map(|e| (boxes[e.source().index()].node, boxes[e.target().index()].node))
             .collect();
-        let rev = back_edges(nodes.len(), &ends);
+        // Back edges are the ones the layering turned round.
+        let rev: Vec<bool> = ends.iter().map(|&(s, t)| orig[s] > orig[t]).collect();
         let (mut edges, mut stack_edges) = (Vec::new(), Vec::new());
         for (e, &(s, t)) in graph.g.edge_references().zip(&ends) {
             let (src, dst, d) = (e.source().index(), e.target().index(), e.weight());
@@ -530,7 +544,9 @@ impl Layout {
         let (nodes, rows) = (&mut self.nodes, &self.rows);
         let mut parts = Vec::new();
         for e in std::mem::take(&mut self.edges) {
-            let (mut path, group) = (vec![e.path[0]], nodes[e.path[0]].group);
+            // A line between subgraphs belongs to neither frame.
+            let (first, last) = (nodes[e.path[0]].group, nodes[e.path[e.path.len() - 1]].group);
+            let (mut path, group) = (vec![e.path[0]], if first == last { first } else { None });
             for w in e.path.windows(2) {
                 let bundle = nodes[w[1]].kind == Kind::Boxes;
                 for k in nodes[w[0]].layer + 1..nodes[w[1]].layer {
@@ -593,7 +609,7 @@ impl Layout {
     /// Lanes, and each layer's nodes. Every subgraph is a lane in each row
     /// it reaches, so its frame can never enclose a stranger.
     fn lanes(&mut self) {
-        for n in self.nodes.iter().filter(|n| n.kind == Kind::Boxes) {
+        for n in self.nodes.iter().filter(|n| n.kind == Kind::Boxes || n.group.is_none()) {
             let row = self.row(n.layer);
             match self.lanes.iter_mut().find(|l| (l.group, l.row) == (n.group, row)) {
                 Some(l) => (l.first, l.last) = (l.first.min(n.layer), l.last.max(n.layer)),

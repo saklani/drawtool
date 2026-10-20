@@ -1,6 +1,7 @@
 # Builds drawtool for each platform the Claude Code plugin supports and puts
-# the binaries on the release for the crate's version (v0.1.0 holds the latest
-# 0.1.0 build), marked latest, which plugin/bin/drawtool downloads from.
+# the binaries on the release for the crate's version (v<version> from
+# Cargo.toml, holding that version's latest build), marked latest, which
+# plugin/bin/drawtool downloads from.
 name: binaries
 
 on:

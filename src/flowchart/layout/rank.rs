@@ -5,10 +5,10 @@ use crate::flowchart::model::Graph;
 use petgraph::visit::EdgeRef;
 
 /// Each node's layer: the longest path to it over `edges` (source, target,
-/// span), treating `rev` edges as reversed and skipping self-loops; then
+/// span), treating `reversed` edges as reversed and skipping self-loops; then
 /// sources are pulled down next to their nearest child.
-fn layering(n: usize, edges: &[(usize, usize, usize)], rev: &[bool]) -> Vec<usize> {
-    let forward: Vec<(usize, usize, usize)> = (edges.iter().zip(rev))
+fn layering(n: usize, edges: &[(usize, usize, usize)], reversed: &[bool]) -> Vec<usize> {
+    let forward: Vec<(usize, usize, usize)> = (edges.iter().zip(reversed))
         .filter(|((s, t, _), _)| s != t)
         .map(|(&(s, t, span), &r)| if r { (t, s, span) } else { (s, t, span) })
         .collect();

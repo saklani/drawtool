@@ -4,7 +4,7 @@
 //! (isotonic regression) → ports → channel tracks → paint.
 //!
 //! Coordinates are abstract: `l` runs along the flow (layers) and `c` across
-//! it; `phys` maps them to x/y, so TD and LR share every line of layout.
+//! it; `to_xy` maps them to x/y, so TD and LR share every line of layout.
 //!
 //! A *box* is something drawn with a border: a node of the graph. A layout
 //! *node* is what ordering and placement move: a box, a `%% stack:` of boxes
@@ -53,7 +53,7 @@ struct SelfLoop {
     arrow: bool,
 }
 
-struct Box {
+struct NodeBox {
     lines: Vec<String>,
     shape: Shape,
     mark: Mark,
@@ -62,8 +62,8 @@ struct Box {
     node: usize,
     offset: i64,
     /// Size across the flow and along it.
-    csize: i64,
-    lsize: i64,
+    across: i64,
+    along: i64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -84,14 +84,14 @@ struct Node {
     down: Vec<usize>,
     /// Cross-axis position of its first cell, and size across and along the flow.
     pos: i64,
-    csize: i64,
-    lsize: i64,
+    across: i64,
+    along: i64,
 }
 
 impl Node {
     fn new(kind: Kind, layer: usize, group: Option<usize>) -> Self {
         let (boxes, lines, up, down) = Default::default();
-        Node { kind, boxes, lines, layer, group, up, down, pos: 0, csize: 0, lsize: 0 }
+        Node { kind, boxes, lines, layer, group, up, down, pos: 0, across: 0, along: 0 }
     }
 
     /// How strongly placement pulls it toward its neighbours.
@@ -106,7 +106,7 @@ impl Node {
     /// First and last cross-axis cell, widened by its group's frame.
     fn framed(&self) -> (i64, i64) {
         let m = FRAME * i64::from(self.group.is_some());
-        (self.pos - m, self.pos + self.csize - 1 + m)
+        (self.pos - m, self.pos + self.across - 1 + m)
     }
 }
 
@@ -149,26 +149,26 @@ struct Port {
     head: bool,
 }
 
-/// One edge segment between adjacent layers, `cs` → `ct` across the channel.
-struct Seg {
-    chan: usize,
+/// One edge segment between adjacent layers, `from_at` → `to_at` across the channel.
+struct Segment {
+    channel: usize,
     tail: bool,
     from: Port,
     to: Port,
     style: Style,
     arrow: bool,
-    cs: i64,
-    ct: i64,
+    from_at: i64,
+    to_at: i64,
     track: i64,
 }
 
-impl Seg {
+impl Segment {
     fn span(&self) -> (i64, i64) {
-        (self.cs.min(self.ct), self.cs.max(self.ct))
+        (self.from_at.min(self.to_at), self.from_at.max(self.to_at))
     }
 
     fn bent(&self) -> bool {
-        self.cs != self.ct
+        self.from_at != self.to_at
     }
 }
 
@@ -188,7 +188,7 @@ struct Layout {
     td: bool,
     gap: i64,
     titles: Vec<String>,
-    boxes: Vec<Box>,
+    boxes: Vec<NodeBox>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     stack_edges: Vec<StackEdge>,
@@ -199,14 +199,14 @@ struct Layout {
     wraps: Vec<(usize, usize, Style)>,
     lanes: Vec<Lane>,
     lane_of: Vec<usize>,
-    segs: Vec<Seg>,
+    segments: Vec<Segment>,
     /// The port kinds at each node side in order of appearance, and where each port sits.
     port_kinds: HashMap<(usize, Side), Vec<(Style, bool)>>,
     port: HashMap<Port, i64>,
     /// Per layer: where its band starts along the flow, and the first track
     /// of the channel after it.
-    bstart: Vec<i64>,
-    tstart: Vec<i64>,
+    band_start: Vec<i64>,
+    track_start: Vec<i64>,
     /// Per row: its first and last cell across the flow.
     row_span: Vec<(i64, i64)>,
 }
@@ -217,14 +217,14 @@ pub fn render(graph: &Graph, direction: Option<Direction>) -> String {
     draw(graph, direction.unwrap_or(graph.direction) == Direction::TD, &[]).0
 }
 
-/// Lay out and paint `graph`, cut into rows before each layer in `cuts`
+/// Lay out and paint `graph`, cut into rows before each layer in `row_breaks`
 /// (layers as [`layers`] numbers them; left to right only).
 /// The drawing, and how wide each of its rows is.
-pub(crate) fn draw(graph: &Graph, td: bool, cuts: &[usize]) -> (String, Vec<i64>) {
+pub(crate) fn draw(graph: &Graph, td: bool, row_breaks: &[usize]) -> (String, Vec<i64>) {
     if graph.g.node_count() == 0 {
         return (String::new(), vec![0]);
     }
-    let mut l = Layout::new(graph, td, cuts);
+    let mut l = Layout::new(graph, td, row_breaks);
     l.lanes();
     l.order();
     l.sizes();
@@ -241,22 +241,22 @@ pub(crate) fn draw(graph: &Graph, td: bool, cuts: &[usize]) -> (String, Vec<i64>
 }
 
 impl Layout {
-    fn new(graph: &Graph, td: bool, cuts: &[usize]) -> Self {
+    fn new(graph: &Graph, td: bool, row_breaks: &[usize]) -> Self {
         // Each cut adds two layers: the exits closing one row, the entries opening the next.
-        let at = |l: usize| l + 2 * cuts.iter().filter(|&&c| c <= l).count();
-        let orig = layers(graph);
-        let layer: Vec<usize> = orig.iter().map(|&l| at(l)).collect();
+        let at = |l: usize| l + 2 * row_breaks.iter().filter(|&&c| c <= l).count();
+        let base_layer = layers(graph);
+        let layer: Vec<usize> = base_layer.iter().map(|&l| at(l)).collect();
         let defs: Vec<_> = graph.g.node_weights().collect();
-        let mut boxes: Vec<Box> = (defs.iter().enumerate())
-            .map(|(i, n)| Box {
+        let mut boxes: Vec<NodeBox> = (defs.iter().enumerate())
+            .map(|(i, n)| NodeBox {
                 lines: n.lines.clone(),
                 shape: n.shape,
                 mark: n.mark,
                 looped: None,
                 node: i,
                 offset: 0,
-                csize: 0,
-                lsize: 0,
+                across: 0,
+                along: 0,
             })
             .collect();
         // One node per box; then a stack's boxes move to the stack's first.
@@ -275,7 +275,7 @@ impl Layout {
             .map(|e| (boxes[e.source().index()].node, boxes[e.target().index()].node))
             .collect();
         // Back edges are the ones the layering turned round.
-        let rev: Vec<bool> = ends.iter().map(|&(s, t)| orig[s] > orig[t]).collect();
+        let reversed: Vec<bool> = ends.iter().map(|&(s, t)| base_layer[s] > base_layer[t]).collect();
         let (mut edges, mut stack_edges) = (Vec::new(), Vec::new());
         for (e, &(s, t)) in graph.g.edge_references().zip(&ends) {
             let (src, dst, d) = (e.source().index(), e.target().index(), e.weight());
@@ -284,11 +284,11 @@ impl Layout {
             } else if s == t {
                 stack_edges.push(StackEdge { src, dst, label: d.label.clone(), style: d.style, arrow: d.arrow });
             } else {
-                let r = rev[e.id().index()];
+                let r = reversed[e.id().index()];
                 let both = d.arrow == Arrow::Both;
                 let mut path = if r { vec![t, s] } else { vec![s, t] };
                 if let Some(label) = &d.label {
-                    let mut node = Node::new(Kind::Label, at(orig[path[0]] + 1), nodes[path[0]].group);
+                    let mut node = Node::new(Kind::Label, at(base_layer[path[0]] + 1), nodes[path[0]].group);
                     node.lines.clone_from(label);
                     nodes.push(node);
                     path.insert(1, nodes.len() - 1);
@@ -307,15 +307,15 @@ impl Layout {
             edges,
             stack_edges,
             layers: vec![vec![]; n_layers],
-            rows: std::iter::once(0).chain(cuts.iter().map(|&c| at(c) - 1)).collect(),
+            rows: std::iter::once(0).chain(row_breaks.iter().map(|&c| at(c) - 1)).collect(),
             wraps: Vec::new(),
             lanes: Vec::new(),
             lane_of: Vec::new(),
-            segs: Vec::new(),
+            segments: Vec::new(),
             port_kinds: HashMap::new(),
             port: HashMap::new(),
-            bstart: Vec::new(),
-            tstart: Vec::new(),
+            band_start: Vec::new(),
+            track_start: Vec::new(),
             row_span: Vec::new(),
         };
         l.dummies();
@@ -515,11 +515,11 @@ mod tests {
         // By span, `a` (0..10) comes first, but if it took the upper track its
         // way down (at 10) would cross b's track and b's way up (at 5) a's.
         let port = |node, side| Port { node, side, style: Style::Solid, head: false };
-        let seg = |from, to, cs, ct| Seg { chan: 0, tail: false, from, to, style: Style::Solid, arrow: false, cs, ct, track: 0 };
+        let seg = |from, to, from_at, to_at| Segment { channel: 0, tail: false, from, to, style: Style::Solid, arrow: false, from_at, to_at, track: 0 };
         let mut l = Layout { layers: vec![vec![], vec![]], ..Default::default() };
-        l.segs.push(seg(port(0, Side::Out), port(1, Side::In), 0, 10));
-        l.segs.push(seg(port(2, Side::Out), port(3, Side::In), 5, 20));
+        l.segments.push(seg(port(0, Side::Out), port(1, Side::In), 0, 10));
+        l.segments.push(seg(port(2, Side::Out), port(3, Side::In), 5, 20));
         l.tracks();
-        assert_eq!((l.segs[0].track, l.segs[1].track), (1, 0));
+        assert_eq!((l.segments[0].track, l.segments[1].track), (1, 0));
     }
 }

@@ -5,15 +5,15 @@ use super::{Kind, Lane, Layout, Node};
 /// Edge crossings between consecutive layers.
 pub(super) fn crossings(layers: &[Vec<usize>], nodes: &[Node]) -> usize {
     let pos = positions(layers, nodes.len());
-    let pairs = |lay: &Vec<usize>| (0..lay.len()).flat_map(move |i| lay[i + 1..].iter().map(move |&b| (lay[i], b))).collect::<Vec<_>>();
+    let pairs = |layer_nodes: &Vec<usize>| (0..layer_nodes.len()).flat_map(move |i| layer_nodes[i + 1..].iter().map(move |&b| (layer_nodes[i], b))).collect::<Vec<_>>();
     layers.iter().flat_map(pairs).map(|(a, b)| crossed(nodes, &pos, a, b, false)).sum()
 }
 
 /// Each node's place in its layer.
 pub(super) fn positions(layers: &[Vec<usize>], n: usize) -> Vec<usize> {
     let mut pos = vec![0; n];
-    for lay in layers {
-        lay.iter().enumerate().for_each(|(i, &v)| pos[v] = i);
+    for layer_nodes in layers {
+        layer_nodes.iter().enumerate().for_each(|(i, &v)| pos[v] = i);
     }
     pos
 }
@@ -21,7 +21,7 @@ pub(super) fn positions(layers: &[Vec<usize>], n: usize) -> Vec<usize> {
 /// Crossings among the edges of `a` and `b` with `a` placed first: below
 /// them, and above them too if `up`.
 pub(super) fn crossed(nodes: &[Node], pos: &[usize], a: usize, b: usize, up: bool) -> usize {
-    let side = |na: &[usize], nb: &[usize]| na.iter().map(|&x| nb.iter().filter(|&&y| pos[x] > pos[y]).count()).sum::<usize>();
+    let side = |na: &[usize], neighbours: &[usize]| na.iter().map(|&x| neighbours.iter().filter(|&&y| pos[x] > pos[y]).count()).sum::<usize>();
     side(&nodes[a].down, &nodes[b].down) + if up { side(&nodes[a].up, &nodes[b].up) } else { 0 }
 }
 
@@ -58,27 +58,27 @@ impl Layout {
             self.nodes[x].down.push(y);
             self.nodes[y].up.push(x);
         }
-        let nl = self.layers.len();
+        let n_layers = self.layers.len();
         let (mut best, mut best_c) = (self.layers.clone(), usize::MAX);
         for it in 0..16 {
             let mut rank = vec![0.0; self.nodes.len()];
             let down = it % 2 == 0;
-            let ks: Vec<usize> = if down { (1..nl).collect() } else { (0..nl - 1).rev().collect() };
-            for k in ks {
-                let adj = if down { k - 1 } else { k + 1 };
-                self.layers[adj].iter().enumerate().for_each(|(i, &v)| rank[v] = i as f64);
+            let sweep_order: Vec<usize> = if down { (1..n_layers).collect() } else { (0..n_layers - 1).rev().collect() };
+            for k in sweep_order {
+                let fixed = if down { k - 1 } else { k + 1 };
+                self.layers[fixed].iter().enumerate().for_each(|(i, &v)| rank[v] = i as f64);
                 let key = |v: usize| {
-                    let nb = if down { &self.nodes[v].up } else { &self.nodes[v].down };
-                    if nb.is_empty() {
+                    let neighbours = if down { &self.nodes[v].up } else { &self.nodes[v].down };
+                    if neighbours.is_empty() {
                         rank[v]
                     } else {
-                        nb.iter().map(|&m| rank[m]).sum::<f64>() / nb.len() as f64
+                        neighbours.iter().map(|&m| rank[m]).sum::<f64>() / neighbours.len() as f64
                     }
                 };
-                let mut lay = self.layers[k].clone();
-                lay.sort_by(|&a, &b| self.lane_of[a].cmp(&self.lane_of[b]).then(key(a).total_cmp(&key(b))));
-                lay.iter().enumerate().for_each(|(i, &v)| rank[v] = i as f64);
-                self.layers[k] = lay;
+                let mut layer_nodes = self.layers[k].clone();
+                layer_nodes.sort_by(|&a, &b| self.lane_of[a].cmp(&self.lane_of[b]).then(key(a).total_cmp(&key(b))));
+                layer_nodes.iter().enumerate().for_each(|(i, &v)| rank[v] = i as f64);
+                self.layers[k] = layer_nodes;
             }
             self.transpose();
             let c = crossings(&self.layers, &self.nodes);
@@ -108,12 +108,12 @@ impl Layout {
         let mut improved = true;
         while improved {
             improved = false;
-            for lay in &mut self.layers {
-                for i in 1..lay.len() {
-                    let (a, b) = (lay[i - 1], lay[i]);
+            for layer_nodes in &mut self.layers {
+                for i in 1..layer_nodes.len() {
+                    let (a, b) = (layer_nodes[i - 1], layer_nodes[i]);
                     let same_lane = self.lane_of[a] == self.lane_of[b];
                     if same_lane && cost(&self.nodes, &pos, b, a) < cost(&self.nodes, &pos, a, b) {
-                        lay.swap(i - 1, i);
+                        layer_nodes.swap(i - 1, i);
                         (pos[a], pos[b]) = (i, i - 1);
                         improved = true;
                     }

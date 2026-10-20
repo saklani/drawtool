@@ -30,7 +30,7 @@ impl Layout {
     }
 
     pub(super) fn box_len(&self, k: usize) -> i64 {
-        self.layers[k].iter().map(|&v| self.nodes[v].lsize).max().unwrap_or(0)
+        self.layers[k].iter().map(|&v| self.nodes[v].along).max().unwrap_or(0)
     }
 
     /// Length of layer `k` along the flow: its longest box, then its
@@ -53,23 +53,23 @@ impl Layout {
                 let lines = 2 * self.wraps_into(r).len() as i64 - 1;
                 cur = lines.max(0) + if self.frames().any(|f| f.1 == k) { FRAME } else { 0 };
             }
-            self.bstart.push(cur);
+            self.band_start.push(cur);
             cur += self.band_len(k);
-            let segs = self.segs.iter().filter(|s| s.chan == k);
-            let ntracks = segs.clone().filter(|s| s.bent()).map(|s| s.track + 1).max().unwrap_or(0);
+            let segments = self.segments.iter().filter(|s| s.channel == k);
+            let ntracks = segments.clone().filter(|s| s.bent()).map(|s| s.track + 1).max().unwrap_or(0);
             // A head at a segment's start takes a cell, and a line cell after
             // it keeps it apart from the tracks and other heads.
-            let head = segs.clone().any(|s| s.tail);
+            let head = segments.clone().any(|s| s.tail);
             let lead = i64::from(!self.td)
                 + if head { 1 + i64::from(self.td) } else { 0 }
                 + if self.frames().any(|f| f.2 == k) { FRAME } else { 0 };
             let before_tail = if self.frames().any(|f| f.1 == k + 1) { FRAME } else { 0 };
-            self.tstart.push(cur + lead);
+            self.track_start.push(cur + lead);
             cur += lead + ntracks + before_tail + 1;
         }
     }
 
-    pub(super) fn phys(&self, l: i64, c: i64) -> Pt {
+    pub(super) fn to_xy(&self, l: i64, c: i64) -> Pt {
         if self.td {
             (c, l)
         } else {
@@ -80,8 +80,8 @@ impl Layout {
     /// A box's top-left and size.
     pub(super) fn box_rect(&self, b: usize) -> (Pt, Pt) {
         let (bx, (lo, hi)) = (&self.boxes[b], self.box_range(b));
-        let (l0, w) = (self.bstart[self.nodes[bx.node].layer], hi - lo + 1);
-        (self.phys(l0, lo), if self.td { (w, bx.lsize) } else { (bx.lsize, w) })
+        let (l0, w) = (self.band_start[self.nodes[bx.node].layer], hi - lo + 1);
+        (self.to_xy(l0, lo), if self.td { (w, bx.along) } else { (bx.along, w) })
     }
 
     pub(super) fn paint(mut self) -> Painter {
@@ -112,12 +112,12 @@ impl Layout {
             if let Some(SelfLoop { style, arrow }) = bx.looped {
                 // Out of the flow side by the last cell before the far
                 // corner, around that corner, and into the far side.
-                let (l0, (_, cend)) = (self.bstart[self.nodes[bx.node].layer], self.box_range(b));
-                let lend = l0 + bx.lsize - 1;
+                let (l0, (_, cend)) = (self.band_start[self.nodes[bx.node].layer], self.box_range(b));
+                let lend = l0 + bx.along - 1;
                 let back = (lend - 2).max(l0 + 1);
                 let pts =
                     [(lend, cend - 1), (lend + 1, cend - 1), (lend + 1, cend + 1), (back, cend + 1), (back, cend)];
-                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
+                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.to_xy(l, c)).collect();
                 let net = p.net();
                 p.line(&pts, net, Stroke::light(style), Layer::Main);
                 if arrow {
@@ -129,11 +129,11 @@ impl Layout {
                 p.text(x + 1 + (w - 2 - width(t)) / 2, y + 1 + top + i as i64, t);
             }
         }
-        for nd in self.nodes.iter().filter(|n| n.kind == Kind::Label) {
-            let (x, y) = self.phys(self.bstart[nd.layer], nd.pos);
-            let (w, h) = if self.td { (nd.csize, nd.lsize) } else { (nd.lsize, nd.csize) };
-            let top = (h - nd.lines.len() as i64) / 2;
-            for (i, t) in nd.lines.iter().enumerate() {
+        for node in self.nodes.iter().filter(|n| n.kind == Kind::Label) {
+            let (x, y) = self.to_xy(self.band_start[node.layer], node.pos);
+            let (w, h) = if self.td { (node.across, node.along) } else { (node.along, node.across) };
+            let top = (h - node.lines.len() as i64) / 2;
+            for (i, t) in node.lines.iter().enumerate() {
                 p.text(x + (w - width(t)) / 2, y + top + i as i64, t);
             }
         }
@@ -144,41 +144,41 @@ impl Layout {
         // different ports that pass through each other are drawn as crossings.
         let mut nets: HashMap<Port, usize> = HashMap::new();
         let (arrow, back_arrow) = if self.td { ('▼', '▲') } else { ('►', '◄') };
-        let in_l = |n: usize| self.bstart[self.nodes[n].layer];
-        let out_l = |n: usize| in_l(n) + self.nodes[n].lsize - 1;
-        for s in &self.segs {
-            let t = self.tstart[s.chan] + s.track;
+        let in_l = |n: usize| self.band_start[self.nodes[n].layer];
+        let out_l = |n: usize| in_l(n) + self.nodes[n].along - 1;
+        for s in &self.segments {
+            let t = self.track_start[s.channel] + s.track;
             // A head at the start sets the line a cell out, past it.
-            let start = (out_l(s.from.node) + i64::from(s.tail), s.cs);
-            let end = (in_l(s.to.node) - i64::from(s.arrow), s.ct);
+            let start = (out_l(s.from.node) + i64::from(s.tail), s.from_at);
+            let end = (in_l(s.to.node) - i64::from(s.arrow), s.to_at);
             let pieces = if s.bent() {
                 // A track shared with a segment from another port is a fan-in.
-                let fan_in = self.segs.iter().any(|o| {
+                let fan_in = self.segments.iter().any(|o| {
                     o.bent()
-                        && (o.chan, o.track) == (s.chan, s.track)
+                        && (o.channel, o.track) == (s.channel, s.track)
                         && o.from != s.from
                         && overlaps(o.span(), s.span())
                 });
                 let track_port = if fan_in { s.to } else { s.from };
                 vec![
-                    (s.from, vec![start, (t, s.cs)]),
-                    (track_port, vec![(t, s.cs), (t, s.ct)]),
-                    (s.to, vec![(t, s.ct), end]),
+                    (s.from, vec![start, (t, s.from_at)]),
+                    (track_port, vec![(t, s.from_at), (t, s.to_at)]),
+                    (s.to, vec![(t, s.to_at), end]),
                 ]
             } else {
                 vec![(s.from, vec![start, end])]
             };
             for (port, pts) in pieces {
                 let net = *nets.entry(port).or_insert_with(|| p.net());
-                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
+                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.to_xy(l, c)).collect();
                 p.line(&pts, net, Stroke::light(s.style), Layer::Main);
             }
             if s.arrow {
-                let (x, y) = self.phys(in_l(s.to.node) - 1, s.ct);
+                let (x, y) = self.to_xy(in_l(s.to.node) - 1, s.to_at);
                 p.symbol(x, y, arrow);
             }
             if s.tail {
-                let (x, y) = self.phys(out_l(s.from.node) + 1, s.cs);
+                let (x, y) = self.to_xy(out_l(s.from.node) + 1, s.from_at);
                 p.symbol(x, y, back_arrow);
             }
         }
@@ -190,8 +190,8 @@ impl Layout {
             let members = (self.layers[lo..=hi].iter().flatten().map(|&v| &self.nodes[v]))
                 .filter(|n| n.group == Some(group) && n.kind == Kind::Boxes);
             let (c0, c1) = members.map(Node::framed).reduce(|(a, b), (c, d)| (a.min(c), b.max(d))).unwrap();
-            let (l0, l1) = (self.bstart[lo] - FRAME, self.bstart[hi] + self.band_len(hi) - 1 + FRAME);
-            let ((xa, ya), (xb, yb)) = (self.phys(l0, c0), self.phys(l1, c1));
+            let (l0, l1) = (self.band_start[lo] - FRAME, self.band_start[hi] + self.band_len(hi) - 1 + FRAME);
+            let ((xa, ya), (xb, yb)) = (self.to_xy(l0, c0), self.to_xy(l1, c1));
             let (x0, x1, y0, y1) = (xa.min(xb), xa.max(xb), ya.min(yb), ya.max(yb));
             p.rect((x0, y0), (x1 - x0 + 1, y1 - y0 + 1), Stroke::DOTTED, Corners::Square, Layer::Under);
             let title = format!(" {} ", self.titles[group]);
@@ -215,11 +215,11 @@ impl Layout {
             let m = wraps.len() as i64;
             for (i, &(exit, entry, style)) in wraps.iter().enumerate() {
                 let (out, line) = (2 * (m - 1 - i as i64), self.row_span[r].0 - 1 - i as i64);
-                let (lx, cx, cy) = (self.bstart[self.nodes[exit].layer], self.cen(exit), self.cen(entry));
+                let (lx, cx, cy) = (self.band_start[self.nodes[exit].layer], self.centre(exit), self.centre(entry));
                 let mut pts = vec![(lx, cx), (lx + out, cx), (lx + out, line), (out, line), (out, cy)];
-                pts.push((self.bstart[self.nodes[entry].layer] - 1, cy));
+                pts.push((self.band_start[self.nodes[entry].layer] - 1, cy));
                 pts.dedup();
-                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.phys(l, c)).collect();
+                let pts: Vec<Pt> = pts.into_iter().map(|(l, c)| self.to_xy(l, c)).collect();
                 let net = p.net();
                 p.line(&pts, net, Stroke::light(style), Layer::Main);
             }
@@ -241,7 +241,7 @@ impl Layout {
         }
         for (u, w) in pairs {
             let (bu, bw) = (&self.boxes[u], &self.boxes[w]);
-            let mid = self.bstart[self.nodes[bu.node].layer] + (bu.lsize.min(bw.lsize) - 1) / 2;
+            let mid = self.band_start[self.nodes[bu.node].layer] + (bu.along.min(bw.along) - 1) / 2;
             let (cu, cw) = (self.box_range(u).1, self.box_range(w).0);
             let lines: Vec<&StackEdge> = self.between(u, w).collect();
             let k = lines.len() as i64;
@@ -251,10 +251,10 @@ impl Layout {
                 let (head, tail) = (e.arrow != Arrow::None, e.arrow == Arrow::Both);
                 let (start, end) = (from + step * i64::from(tail), to - step * i64::from(head));
                 let net = p.net();
-                p.line(&[self.phys(at, start), self.phys(at, end)], net, Stroke::light(e.style), Layer::Main);
+                p.line(&[self.to_xy(at, start), self.to_xy(at, end)], net, Stroke::light(e.style), Layer::Main);
                 for (on, c, forward) in [(head, end, step == 1), (tail, start, step != 1)] {
                     if on {
-                        let (x, y) = self.phys(at, c);
+                        let (x, y) = self.to_xy(at, c);
                         p.symbol(x, y, if forward { ahead } else { back });
                     }
                 }
@@ -262,7 +262,7 @@ impl Layout {
                 let gap = cw - cu - 1;
                 if self.td {
                     let text = label.join(" ");
-                    let (x, y) = self.phys(if i == 0 { at - 1 } else { at + 1 }, cu + 1 + (gap - width(&text)) / 2);
+                    let (x, y) = self.to_xy(if i == 0 { at - 1 } else { at + 1 }, cu + 1 + (gap - width(&text)) / 2);
                     p.text(x, y, &text);
                 } else {
                     // The first of several lines has its label on its left.
@@ -277,28 +277,28 @@ impl Layout {
         }
         for k in 0..self.layers.len() {
             for (i, e) in self.brackets(k).into_iter().enumerate() {
-                let lane = self.bstart[k] + self.box_len(k) + 1 + 2 * i as i64;
+                let lane = self.band_start[k] + self.box_len(k) + 1 + 2 * i as i64;
                 let (u, w, _) = self.ends(e);
-                let far = |b: usize| self.bstart[k] + self.boxes[b].lsize - 1;
+                let far = |b: usize| self.band_start[k] + self.boxes[b].along - 1;
                 let (mut a, mut b) = ((far(u), self.bracket_at(u, true)), (far(w), self.bracket_at(w, false)));
                 if e.src != u {
                     (a, b) = (b, a);
                 }
                 let (head, tail) = (e.arrow != Arrow::None, e.arrow == Arrow::Both);
                 let (start, end) = ((a.0 + i64::from(tail), a.1), (b.0 + i64::from(head), b.1));
-                let pts = [start, (lane, a.1), (lane, b.1), end].map(|(l, c)| self.phys(l, c));
+                let pts = [start, (lane, a.1), (lane, b.1), end].map(|(l, c)| self.to_xy(l, c));
                 let net = p.net();
                 p.line(&pts, net, Stroke::light(e.style), Layer::Main);
                 for (on, (l, c)) in [(head, end), (tail, start)] {
                     if on {
-                        let (x, y) = self.phys(l, c);
+                        let (x, y) = self.to_xy(l, c);
                         p.symbol(x, y, home);
                     }
                 }
                 if let Some(label) = &e.label {
                     let (mid, text) = ((a.1 + b.1) / 2, label.join(" "));
                     let at = if self.td { (lane + 1, mid - width(&text) / 2) } else { (lane + 2, mid) };
-                    let (x, y) = self.phys(at.0, at.1);
+                    let (x, y) = self.to_xy(at.0, at.1);
                     p.text(x, y, &text);
                 }
             }

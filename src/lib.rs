@@ -13,7 +13,6 @@
 //! data model is exported too, for callers that want to inspect or modify a
 //! diagram before drawing it.
 
-use mermaid::Model;
 use std::fmt;
 
 mod flowchart;
@@ -56,9 +55,10 @@ pub fn parse(text: &str) -> Result<Diagram, Error> {
         return wireframe::parse_wireframe(text).map(Diagram::Wireframe);
     }
     match mermaid::parse(text)? {
-        Model::Flowchart(m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
-        Model::State(m) => flowchart::state(&m, text).map(Diagram::Flowchart),
-        Model::Sequence(m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
+        ("flowchart", m) => flowchart::flowchart(&m, text).map(Diagram::Flowchart),
+        ("state", m) => flowchart::state(&m, text).map(Diagram::Flowchart),
+        ("sequence", m) => Ok(Diagram::Sequence(sequence::sequence(&m))),
+        (t, _) => Err(Error::new(format!("`{t}` diagrams aren't supported yet"))),
     }
 }
 

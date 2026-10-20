@@ -288,3 +288,10 @@ fn a_line_without_an_arrow_draws_no_head() {
         assert!(!out.contains(['►', '▼', '◄', '▲']), "\n{out}");
     }
 }
+
+#[test]
+fn an_arrowhead_never_lands_on_another_line() {
+    // A two-way edge and a back edge meet at `c`: the head must reach the box.
+    let out = render(&graph("flowchart LR\na --- b\nb <--> c\nc --> a").unwrap(), None);
+    assert!(!["►┤", "├◄", "►┼", "┼◄"].iter().any(|p| out.contains(p)), "\n{out}");
+}

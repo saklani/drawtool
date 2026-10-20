@@ -747,7 +747,8 @@ impl Layout {
         for e in &self.edges {
             for (j, w) in e.path.windows(2).enumerate() {
                 let port = |node, side, head| Port { node, side, style: e.style, head };
-                let (from, to) = (port(w[0], Side::Out, e.head), port(w[1], Side::In, e.head));
+                // Lines that end in an arrowhead share a port; a line without one keeps apart.
+                let (from, to) = (port(w[0], Side::Out, e.head), port(w[1], Side::In, !e.arrow));
                 let (chan, arrow) = (self.nodes[w[0]].layer, e.arrow && j == e.path.len() - 2);
                 self.segs.push(Seg { chan, tail: j == 0 && e.tail, from, to, style: e.style, arrow, cs: 0, ct: 0, track: 0 });
             }

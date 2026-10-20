@@ -89,7 +89,7 @@ fn run(args: &Args, max_width: usize) -> Result<Fit, Box<dyn std::error::Error>>
     }
     Ok(match diagram {
         Diagram::Wireframe(w) => render_wireframe_fit(&w, max_width),
-        Diagram::Sequence(s) => render_sequence_fit(&s, max_width)?,
+        Diagram::Sequence(s) => render_sequence_fit(&s, max_width),
         Diagram::Flowchart(mut graph) => {
             highlight(&mut graph, &args.highlight)?;
             render_fit(&graph, args.direction.unwrap_or(graph.direction), max_width)

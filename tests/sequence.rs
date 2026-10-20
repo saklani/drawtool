@@ -5,7 +5,7 @@ use drawtool::{Head, Item, Message, Note, NoteSide, Participant, Sequence};
 use unicode_width::UnicodeWidthStr;
 
 fn draw(src: &str) -> String {
-    render_sequence(&sequence(src).unwrap()).unwrap()
+    render_sequence(&sequence(src).unwrap())
 }
 
 /// Column of the first occurrence of `needle` in each line containing it.
@@ -75,7 +75,7 @@ fn notes_on_every_side() {
     let sides: Vec<NoteSide> =
         seq.items.iter().filter_map(|i| if let Item::Note(n) = i { Some(n.side) } else { None }).collect();
     assert_eq!(sides, [NoteSide::Left, NoteSide::Right, NoteSide::Over, NoteSide::Over]);
-    let out = render_sequence(&seq).unwrap();
+    let out = render_sequence(&seq);
     assert!(col(&out, "│ L │") < col(&out, "┬"), "left note sits left of the lifeline:\n{out}");
     assert!(col(&out, "│ R │") > col(&out, "┬"), "\n{out}");
     assert!(out.contains("span"), "\n{out}");
@@ -126,8 +126,8 @@ fn ignored_lines() {
 fn long_labels_wrap_to_fit_the_budget() {
     let src = "sequenceDiagram\nclient->>api: POST /checkout with a long description of the payload\napi->>pay: create a session for the destination wallet";
     let seq = sequence(src).unwrap();
-    let wide = render_sequence_fit(&seq, 0).unwrap();
-    let fitted = render_sequence_fit(&seq, 60).unwrap();
+    let wide = render_sequence_fit(&seq, 0);
+    let fitted = render_sequence_fit(&seq, 60);
     assert!(wide.width > 60, "\n{}", wide.text);
     assert!(fitted.fits && fitted.width <= 60, "\n{}", fitted.text);
 }
@@ -146,7 +146,7 @@ fn box_groups_participants_without_drawing_a_frame() {
     let ids: Vec<&str> = seq.participants.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, ["a", "b"]);
     assert_eq!(seq.items.len(), 1, "only the message: box is not a frame");
-    let out = render_sequence(&seq).unwrap();
+    let out = render_sequence(&seq);
     assert!(!out.contains('┄') && !out.contains("Purple"), "\n{out}");
 }
 
@@ -208,38 +208,11 @@ fn hand_built_sequences_render() {
         participants: vec![part("a"), part("b")],
         items: vec![loop_, Item::Message(msg), Item::Note(note), Item::End],
     };
-    let out = render_sequence(&seq).unwrap();
+    let out = render_sequence(&seq);
     assert!(
         out.contains("│ a │") && out.contains("hi") && out.contains("both") && out.contains("loop again"),
         "\n{out}"
     );
-    assert!(render_sequence_fit(&seq, 0).unwrap().fits);
+    assert!(render_sequence_fit(&seq, 0).fits);
 }
 
-#[test]
-fn hand_built_sequences_are_validated() {
-    let base = sequence(
-        "sequenceDiagram
-a->>b: x",
-    )
-    .unwrap();
-    let err = |edit: &dyn Fn(&mut Sequence)| {
-        let mut seq = base.clone();
-        edit(&mut seq);
-        assert!(render_sequence_fit(&seq, 0).is_err());
-        render_sequence(&seq).unwrap_err().message
-    };
-    let note = |side, first, last| Item::Note(Note { side, first, last, lines: vec!["n".into()] });
-    let message = |from, to| Item::Message(Message { from, to, lines: vec![], dotted: false, head: Head::Open });
-    assert!(err(&|s| s.items.push(message(0, 2))).contains("no participant 2"));
-    assert!(err(&|s| s.items.push(message(5, 0))).contains("no participant 5"));
-    assert!(err(&|s| s.items.push(note(NoteSide::Over, 0, 9))).contains("no participant 9"));
-    assert!(err(&|s| s.items.push(note(NoteSide::Over, 1, 0))).contains("after its `last`"));
-    assert!(err(&|s| s.items.push(note(NoteSide::Left, 0, 1))).contains("only `Over`"));
-    assert!(err(&|s| s.items.insert(0, Item::End)).contains("item 0: outside a frame"));
-    let divider = Item::Divider("else".into());
-    assert!(err(&|s| s.items.push(divider.clone())).contains("item 1: outside a frame"));
-    let start = Item::Start("loop".into());
-    assert!(err(&|s| s.items.push(start.clone())).contains("never closed"));
-    assert!(err(&|s| s.participants.clear()).contains("no participant 1"));
-}

@@ -7,7 +7,6 @@
 
 use crate::paint::{Corners, Layer, Painter, Stroke};
 use crate::text::{first_fit, width, wrap_all, Fit, WRAP_WIDTHS};
-use crate::Error;
 use crate::Style;
 use crate::mermaid::{get, list};
 use serde_json::Value;
@@ -66,51 +65,6 @@ pub enum Item {
 pub struct Sequence {
     pub participants: Vec<Participant>,
     pub items: Vec<Item>,
-}
-
-impl Sequence {
-    /// Check what [`parse`] guarantees, for a sequence built by hand.
-    ///
-    /// # Errors
-    ///
-    /// A message or note naming a participant that doesn't exist, a note whose
-    /// `first` comes after its `last` (or that spans two participants without
-    /// being `Over`), or a `Divider`/`End` outside a frame or a `Start` never
-    /// closed.
-    pub fn validate(&self) -> Result<(), Error> {
-        let n = self.participants.len();
-        let mut open = 0;
-        for (i, item) in self.items.iter().enumerate() {
-            let problem = match item {
-                Item::Message(Message { from, to, .. }) | Item::Note(Note { first: from, last: to, .. })
-                    if *from.max(to) >= n =>
-                {
-                    Some(format!("no participant {} (there are {n})", from.max(to)))
-                }
-                Item::Note(note) if note.first > note.last => Some("a note's `first` is after its `last`".into()),
-                Item::Note(note) if note.side != NoteSide::Over && note.first != note.last => {
-                    Some("only `Over` notes can span two participants".into())
-                }
-                Item::Start(_) => {
-                    open += 1;
-                    None
-                }
-                Item::Divider(_) | Item::End if open == 0 => Some("outside a frame".into()),
-                Item::End => {
-                    open -= 1;
-                    None
-                }
-                _ => None,
-            };
-            if let Some(problem) = problem {
-                return Err(Error::new(format!("item {i}: {problem}")));
-            }
-        }
-        if open > 0 {
-            return Err(Error::new("a frame `Start` is never closed with `End`"));
-        }
-        Ok(())
-    }
 }
 
 /// Mermaid's message codes (`SequenceDB.LINETYPE`): frame starts with their
@@ -371,17 +325,8 @@ fn draw_message(p: &mut Painter, m: &Message, row: i64, x: &[i64]) {
 }
 
 /// Render a sequence diagram as text.
-///
-/// # Errors
-///
-/// A hand-built sequence that fails [`Sequence::validate`].
-pub fn render_sequence(seq: &Sequence) -> Result<String, Error> {
-    seq.validate()?;
-    Ok(draw(seq))
-}
-
-/// [`render_sequence`] for a sequence known to be valid.
-fn draw(seq: &Sequence) -> String {
+#[must_use]
+pub fn render_sequence(seq: &Sequence) -> String {
     if seq.participants.is_empty() {
         return String::new();
     }
@@ -454,12 +399,8 @@ pub fn wrap_sequence(seq: &Sequence, max: usize) -> Sequence {
 
 /// Render within `max_width` columns (0 = unlimited), wrapping text ever
 /// narrower ([`WRAP_WIDTHS`]) if needed.
-///
-/// # Errors
-///
-/// A hand-built sequence that fails [`Sequence::validate`].
-pub fn render_sequence_fit(seq: &Sequence, max_width: usize) -> Result<Fit, Error> {
-    seq.validate()?;
+#[must_use]
+pub fn render_sequence_fit(seq: &Sequence, max_width: usize) -> Fit {
     let wrapped = |w: Option<usize>| w.map_or_else(|| seq.clone(), |w| wrap_sequence(seq, w));
-    Ok(first_fit(max_width, WRAP_WIDTHS.into_iter().map(|w| draw(&wrapped(w)))))
+    first_fit(max_width, WRAP_WIDTHS.into_iter().map(|w| render_sequence(&wrapped(w))))
 }

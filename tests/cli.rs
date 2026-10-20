@@ -280,3 +280,11 @@ fn two_headed_edges_get_a_head_at_each_end() {
     let back = draw("flowchart LR\na --> b --> c\nc <--> a");
     assert!(back.contains("│ a │◄") && back.contains("►│ c │"), "\n{back}");
 }
+
+#[test]
+fn a_line_without_an_arrow_draws_no_head() {
+    for (src, dir) in [("a --- b\nb -.- c\nc === d", drawtool::Direction::LR), ("a --- b", drawtool::Direction::TD)] {
+        let out = render(&graph(&format!("flowchart LR\n{src}")).unwrap(), Some(dir));
+        assert!(!out.contains(['►', '▼', '◄', '▲']), "\n{out}");
+    }
+}

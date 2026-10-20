@@ -507,7 +507,7 @@ impl Layout {
                     path.insert(1, nodes.len() - 1);
                 }
                 let head = both || (r && d.arrow != Arrow::None);
-                edges.push(Edge { path, style: d.style, head, arrow: both || !r });
+                edges.push(Edge { path, style: d.style, head, arrow: both || (!r && d.arrow != Arrow::None) });
             }
         }
         let n_layers = nodes.iter().map(|n| n.layer).max().unwrap_or(0) + 1;

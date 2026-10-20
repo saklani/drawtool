@@ -101,12 +101,15 @@ impl Node {
 }
 
 /// An edge laid out forward: `path` is one node per layer from where it
-/// starts to where it ends. `head` is an arrowhead at the start (a two-headed
-/// edge, or a reversed one), `arrow` one at the end.
+/// starts to where it ends. `head` marks an edge with an arrowhead at its
+/// start (a two-headed edge, or a reversed one), which gets ports of its
+/// own; `tail` draws that head, on the part of the edge where it starts;
+/// `arrow` is one at the end.
 struct Edge {
     path: Vec<usize>,
     style: Style,
     head: bool,
+    tail: bool,
     arrow: bool,
 }
 
@@ -507,7 +510,7 @@ impl Layout {
                     path.insert(1, nodes.len() - 1);
                 }
                 let head = both || (r && d.arrow != Arrow::None);
-                edges.push(Edge { path, style: d.style, head, arrow: both || (!r && d.arrow != Arrow::None) });
+                edges.push(Edge { path, style: d.style, head, tail: head, arrow: both || (!r && d.arrow != Arrow::None) });
             }
         }
         let n_layers = nodes.iter().map(|n| n.layer).max().unwrap_or(0) + 1;
@@ -567,8 +570,8 @@ impl Layout {
             let entries = (1..path.len()).filter(|&i| rows[1..].contains(&nodes[path[i]].layer));
             let mut from = 0;
             for i in entries.chain([path.len()]) {
-                let (head, arrow) = (e.head && from == 0, e.arrow && i == path.len());
-                parts.push(Edge { path: path[from..i].to_vec(), style: e.style, head, arrow });
+                let (tail, arrow) = (e.tail && from == 0, e.arrow && i == path.len());
+                parts.push(Edge { path: path[from..i].to_vec(), style: e.style, head: e.head, tail, arrow });
                 if let Some(&entry) = path.get(i) {
                     let wrap = (path[i - 1], entry, e.style);
                     if !self.wraps.contains(&wrap) {
@@ -746,7 +749,7 @@ impl Layout {
                 let port = |node, side, head| Port { node, side, style: e.style, head };
                 let (from, to) = (port(w[0], Side::Out, e.head), port(w[1], Side::In, e.head));
                 let (chan, arrow) = (self.nodes[w[0]].layer, e.arrow && j == e.path.len() - 2);
-                self.segs.push(Seg { chan, tail: j == 0 && e.head, from, to, style: e.style, arrow, cs: 0, ct: 0, track: 0 });
+                self.segs.push(Seg { chan, tail: j == 0 && e.tail, from, to, style: e.style, arrow, cs: 0, ct: 0, track: 0 });
             }
         }
         for s in &self.segs {

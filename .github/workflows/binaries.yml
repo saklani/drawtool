@@ -1,6 +1,7 @@
 # Builds drawtool for each platform the Claude Code plugin supports and puts
 # the binaries on a new release for the crate's version (v<version> from
-# Cargo.toml), marked latest, which plugin/bin/drawtool downloads from.
+# Cargo.toml), marked latest, with their SHA256SUMS; plugin/bin/drawtool
+# downloads from it and checks the binary against them.
 # A version that already has a release is left as it is: bump the version
 # to release.
 name: binaries
@@ -57,5 +58,6 @@ jobs:
             echo "$tag is already released; bump the version in Cargo.toml to release this build"
             exit 0
           fi
+          (cd dist && sha256sum drawtool-* > SHA256SUMS)
           notes="drawtool built from $GITHUB_SHA by CI. The Claude Code plugin downloads these; to build it yourself: cargo install --git https://github.com/$GH_REPO"
           gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "$tag" --notes "$notes" --latest

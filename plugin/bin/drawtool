@@ -2,7 +2,7 @@
 # drawtool for the Claude Code plugin. Plugin bin/ comes after the user's PATH,
 # so a drawtool they installed themselves wins and this runs only when there is
 # none: it fetches this platform's build from the latest release once per
-# plugin version, then runs it.
+# plugin version, checks it against the release's SHA256SUMS, then runs it.
 set -e
 
 case "$(uname -s)-$(uname -m)" in
@@ -22,15 +22,25 @@ version=$(basename "$(cd "$(dirname "$0")/.." && pwd)")
 dir="${XDG_CACHE_HOME:-$HOME/.cache}/drawtool/$version"
 bin="$dir/drawtool"
 
+fail() {
+  rm -f "$bin.$$" "$dir/SHA256SUMS.$$"
+  echo "drawtool: $1; build it with cargo install --git https://github.com/saklani/drawtool" >&2
+  exit 1
+}
+
 if [ ! -x "$bin" ]; then
   base="${DRAWTOOL_DOWNLOAD:-https://github.com/saklani/drawtool/releases/latest/download}"
   mkdir -p "$dir"
-  if ! curl -fsSL "$base/drawtool-$target" -o "$bin.$$"; then
-    rm -f "$bin.$$"
-    echo "drawtool: couldn't download $base/drawtool-$target; build it with" \
-      "cargo install --git https://github.com/saklani/drawtool" >&2
-    exit 1
+  curl -fsSL "$base/drawtool-$target" -o "$bin.$$" || fail "couldn't download $base/drawtool-$target"
+  curl -fsSL "$base/SHA256SUMS" -o "$dir/SHA256SUMS.$$" || fail "couldn't download $base/SHA256SUMS"
+  want=$(awk -v f="drawtool-$target" '$2 == f || $2 == "*" f { print $1 }' "$dir/SHA256SUMS.$$")
+  if command -v sha256sum >/dev/null; then
+    got=$(sha256sum "$bin.$$" | cut -d' ' -f1)
+  else
+    got=$(shasum -a 256 "$bin.$$" | cut -d' ' -f1)
   fi
+  [ -n "$want" ] && [ "$got" = "$want" ] || fail "drawtool-$target doesn't match its SHA256SUMS entry"
+  rm -f "$dir/SHA256SUMS.$$"
   chmod +x "$bin.$$"
   mv "$bin.$$" "$bin"
 fi

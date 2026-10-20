@@ -139,6 +139,7 @@ struct Port {
 /// One edge segment between adjacent layers, `cs` → `ct` across the channel.
 struct Seg {
     chan: usize,
+    tail: bool,
     from: Port,
     to: Port,
     style: Style,
@@ -395,7 +396,7 @@ pub(crate) fn measure(graph: &Graph, td: bool) -> Measure {
     let ends: Vec<bool> = (0..n).map(|k| frames.iter().any(|f| f.2 == k)).collect();
     let segs: Vec<i64> = (0..n).map(|k| l.segs.iter().filter(|s| s.chan == k).count() as i64).collect();
     let chan = (0..n).map(|k| {
-        let head = l.segs.iter().any(|s| s.chan == k && s.from.head);
+        let head = l.segs.iter().any(|s| s.chan == k && s.tail);
         let next_starts = starts.get(k + 1).copied().unwrap_or(false);
         let frame = |on: bool| if on { FRAME } else { 0 };
         1 + i64::from(head) + frame(ends[k]) + segs[k] + frame(next_starts) + 1
@@ -525,7 +526,7 @@ impl Layout {
     /// early as possible instead of each taking its own route. An edge that
     /// crosses into another row is split there, between its exit and entry.
     fn dummies(&mut self) {
-        let mut shared: HashMap<(usize, usize, Style), usize> = HashMap::new();
+        let mut shared: HashMap<(usize, usize, Style, bool), usize> = HashMap::new();
         let (nodes, rows) = (&mut self.nodes, &self.rows);
         let mut parts = Vec::new();
         for e in std::mem::take(&mut self.edges) {
@@ -533,7 +534,7 @@ impl Layout {
             for w in e.path.windows(2) {
                 let bundle = nodes[w[1]].kind == Kind::Boxes;
                 for k in nodes[w[0]].layer + 1..nodes[w[1]].layer {
-                    let d = match shared.get(&(w[1], k, e.style)) {
+                    let d = match shared.get(&(w[1], k, e.style, e.head)) {
                         Some(&d) if bundle => d,
                         _ => {
                             nodes.push(Node::new(Kind::Dummy, k, group));
@@ -541,7 +542,7 @@ impl Layout {
                         }
                     };
                     if bundle {
-                        shared.insert((w[1], k, e.style), d);
+                        shared.insert((w[1], k, e.style, e.head), d);
                     }
                     path.push(d);
                 }
@@ -727,9 +728,9 @@ impl Layout {
         for e in &self.edges {
             for (j, w) in e.path.windows(2).enumerate() {
                 let port = |node, side, head| Port { node, side, style: e.style, head };
-                let (from, to) = (port(w[0], Side::Out, j == 0 && e.head), port(w[1], Side::In, false));
+                let (from, to) = (port(w[0], Side::Out, e.head), port(w[1], Side::In, e.head));
                 let (chan, arrow) = (self.nodes[w[0]].layer, e.arrow && j == e.path.len() - 2);
-                self.segs.push(Seg { chan, from, to, style: e.style, arrow, cs: 0, ct: 0, track: 0 });
+                self.segs.push(Seg { chan, tail: j == 0 && e.head, from, to, style: e.style, arrow, cs: 0, ct: 0, track: 0 });
             }
         }
         for s in &self.segs {
@@ -892,8 +893,9 @@ impl Layout {
         (lo, lo + bx.csize - 1)
     }
 
-    /// Port positions: the first style at the centre, others beside it on
-    /// the side facing where their edges go.
+    /// Port positions, after Ondine's `spread`: a side's ports in the order
+    /// their edges go, the straightest at the centre. A back edge has ports
+    /// of its own, apart from the forward edges.
     fn ports(&mut self) {
         // Where each port's edges go, on average.
         let mut ends: HashMap<Port, (i64, i64)> = HashMap::new();
@@ -924,17 +926,33 @@ impl Layout {
                 let (sum, count) = ends[&Port { node: n, side, style, head }];
                 sum / count - c
             };
-            // The kind whose edges run most nearly straight gets the centre.
+            // In the order their edges go, so no two cross here, around the
+            // straightest at the centre.
             let mut kinds = kinds.clone();
-            kinds.sort_by_key(|k| lean(k).abs());
-            let mut used: Vec<i64> = Vec::new();
-            for kind in kinds {
-                let dir = lean(&kind);
-                let key = |&x: &i64| (used.iter().any(|u| (x - u).abs() < 2), (x - c) * dir < 0, (x - c).abs(), x);
-                let free = (lo..=hi).filter(|x| !used.contains(x) && !taken.contains(x));
-                let x = if used.is_empty() { c } else { free.min_by_key(key).unwrap_or(c) };
-                used.push(x);
-                self.port.insert(Port { node: n, side, style: kind.0, head: kind.1 }, x);
+            kinds.sort_by_key(|k| (lean(k), k.1));
+            let free: Vec<i64> = (lo..=hi).filter(|x| !taken.contains(x)).collect();
+            let (count, last) = (kinds.len() as i64, free.len() as i64 - 1);
+            let mid_kind = (0..count).min_by_key(|&i| lean(&kinds[i as usize]).abs()).unwrap_or(0);
+            let mid = free.iter().position(|&x| x >= c).map_or(last, |i| i as i64);
+            // A cell between ports where there's room for it, on each side of the centre.
+            let (gl, gr) = (if mid >= 2 * mid_kind { 2 } else { 1 }, if last - mid >= 2 * (count - 1 - mid_kind) { 2 } else { 1 });
+            for (i, kind) in (0..).zip(kinds) {
+                let at = mid + if i < mid_kind { gl } else { gr } * (i - mid_kind);
+                let x = free.get(at.max(i).min(last - (count - 1 - i)).max(0) as usize);
+                self.port.insert(Port { node: n, side, style: kind.0, head: kind.1 }, x.copied().unwrap_or(c));
+            }
+        }
+        // A two-way pair keeps one order at both ends, so it never crosses itself.
+        let segs = &self.segs;
+        let twins = segs.iter().filter(|s| !s.from.head).flat_map(|s| {
+            let twin = |t: &&Seg| t.from.head && (t.from.node, t.to.node) == (s.from.node, s.to.node);
+            segs.iter().filter(twin).map(|t| (s.from, s.to, t.from, t.to))
+        });
+        for (sf, st, tf, tt) in twins.collect::<Vec<_>>() {
+            let (a, b, c, d) = (self.port[&sf], self.port[&st], self.port[&tf], self.port[&tt]);
+            if (a - c) * (b - d) < 0 {
+                self.port.insert(st, d);
+                self.port.insert(tt, b);
             }
         }
         for s in &mut self.segs {
@@ -1058,7 +1076,7 @@ impl Layout {
             let ntracks = segs.clone().filter(|s| s.bent()).map(|s| s.track + 1).max().unwrap_or(0);
             // A head at a segment's start takes a cell, and a line cell after
             // it keeps it apart from the tracks and other heads.
-            let head = segs.clone().any(|s| s.from.head);
+            let head = segs.clone().any(|s| s.tail);
             let lead = i64::from(!self.td)
                 + if head { 1 + i64::from(self.td) } else { 0 }
                 + if self.frames().any(|f| f.2 == k) { FRAME } else { 0 };
@@ -1148,7 +1166,7 @@ impl Layout {
         for s in &self.segs {
             let t = self.tstart[s.chan] + s.track;
             // A head at the start sets the line a cell out, past it.
-            let start = (out_l(s.from.node) + i64::from(s.from.head), s.cs);
+            let start = (out_l(s.from.node) + i64::from(s.tail), s.cs);
             let end = (in_l(s.to.node) - i64::from(s.arrow), s.ct);
             let pieces = if s.bent() {
                 // A track shared with a segment from another port is a fan-in.
@@ -1176,7 +1194,7 @@ impl Layout {
                 let (x, y) = self.phys(in_l(s.to.node) - 1, s.ct);
                 p.symbol(x, y, arrow);
             }
-            if s.from.head {
+            if s.tail {
                 let (x, y) = self.phys(out_l(s.from.node) + 1, s.cs);
                 p.symbol(x, y, back_arrow);
             }
@@ -1398,7 +1416,7 @@ mod tests {
         // By span, `a` (0..10) comes first, but if it took the upper track its
         // way down (at 10) would cross b's track and b's way up (at 5) a's.
         let port = |node, side| Port { node, side, style: Style::Solid, head: false };
-        let seg = |from, to, cs, ct| Seg { chan: 0, from, to, style: Style::Solid, arrow: false, cs, ct, track: 0 };
+        let seg = |from, to, cs, ct| Seg { chan: 0, tail: false, from, to, style: Style::Solid, arrow: false, cs, ct, track: 0 };
         let mut l = Layout { layers: vec![vec![], vec![]], ..Default::default() };
         l.segs.push(seg(port(0, Side::Out), port(1, Side::In), 0, 10));
         l.segs.push(seg(port(2, Side::Out), port(3, Side::In), 5, 20));

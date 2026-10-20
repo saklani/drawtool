@@ -73,8 +73,8 @@ text:
 ```
 
 When several edges cross the same break, each gets its own line, nested so they never cross.
-Labels are wrapped no more than needed, and each row is as long as fits, found by laying the
-diagram out and measuring it. If a diagram still can't fit (a single layer wider than the
+Labels are wrapped no more than needed, and each row is as long as fits (or a layer shorter,
+where fewer lines wrap), found by laying the diagram out and measuring it. If a diagram still can't fit (a single layer wider than the
 budget), drawtool prints a `note:` on stderr. Top-down is a mode you choose (`flowchart TD`
 or `-d TD`), never a fallback; it only ever wraps labels.
 

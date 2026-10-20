@@ -4,7 +4,9 @@
 
 use super::layout::{draw, layers};
 use super::model::{Direction, Graph};
-use crate::text::{block_width, wrap_all, Fit, WRAP_WIDTHS};
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use crate::text::{first_fit, wrap_all, Fit, WRAP_WIDTHS};
 
 /// Copy of `graph` with every node and edge label wrapped at `max` columns.
 #[must_use]
@@ -15,54 +17,57 @@ pub fn wrap_labels(graph: &Graph, max: usize) -> Graph {
     g
 }
 
-fn wrapped(graph: &Graph, wrap: Option<usize>) -> Graph {
-    wrap.map_or_else(|| graph.clone(), |w| wrap_labels(graph, w))
-}
-
 /// Render within `max_width` columns (0 = unlimited), keeping `direction`:
 /// the loosest label wrapping that fits on one row; else, left to right,
-/// the loosest that can be cut into rows that each fit; else the tightest.
+/// the loosest that can be cut into rows that each fit; else the narrowest.
 #[must_use]
 pub fn render_fit(graph: &Graph, direction: Direction, max_width: usize) -> Fit {
     let (td, budget) = (direction == Direction::TD, if max_width == 0 { i64::MAX } else { max_width as i64 });
-    let fit = |text: String| {
-        let width = block_width(&text) as usize;
-        Fit { fits: width as i64 <= budget, text, width }
-    };
-    let graphs = || WRAP_WIDTHS.iter().map(|&w| wrapped(graph, w));
-    let mut tightest = None;
-    for g in graphs() {
-        let one_row = fit(draw(&g, td, &[]).0);
-        if one_row.fits {
-            return one_row;
-        }
-        tightest = Some(one_row);
-    }
-    let rows = graphs().filter(|_| !td).find_map(|g| Some(fit(draw(&g, td, &cuts(&g, budget)?).0)));
-    rows.or(tightest).unwrap_or_else(|| fit(String::new()))
+    let graphs = || WRAP_WIDTHS.iter().map(|&w| w.map_or_else(|| graph.clone(), |w| wrap_labels(graph, w)));
+    let one_row = graphs().map(|g| draw(&g, td, &[]).0);
+    let rows = graphs().filter(|_| !td).filter_map(|g| Some(draw(&g, false, &cuts(&g, budget)?).0));
+    first_fit(max_width, one_row.chain(rows))
 }
 
-/// Where to cut the layers into rows that each fit in `budget`, each row as
-/// long as it can be, found by laying them out. `None` if a layer is too
-/// wide on its own.
+/// Where to cut the layers into rows that each fit in `budget`, found by
+/// laying them out: each row as long as fits, or a layer shorter where that
+/// cut is cheaper. `None` if a layer is too wide on its own.
 fn cuts(graph: &Graph, budget: i64) -> Option<Vec<usize>> {
-    let n = layers(graph).into_iter().max().map_or(0, |l| l + 1);
+    let layer = layers(graph);
+    let n = layer.iter().max().map_or(0, |l| l + 1);
+    // A cut before layer `j` costs a line per edge wrapping across it, and three per frame it splits.
+    let span = |v: NodeIndex| layer[v.index()];
+    let crosses = |j: usize, a: usize, b: usize| a.min(b) < j && j <= a.max(b);
+    let frames: Vec<(usize, usize)> = (0..graph.groups.len())
+        .filter_map(|g| {
+            let ls = graph.g.node_indices().filter(|&v| graph.g[v].group == Some(g)).map(span);
+            ls.clone().min().zip(ls.max())
+        })
+        .collect();
+    let cost = |j: usize| {
+        let edges = graph.g.edge_references().filter(|e| crosses(j, span(e.source()), span(e.target()))).count();
+        edges + 3 * frames.iter().filter(|f| crosses(j, f.0, f.1)).count()
+    };
     let mut cuts: Vec<usize> = vec![];
+    // A row cut again can grow past the budget once the next cut is in, so give up eventually.
     for _ in 0..2 * n {
         let Some(r) = draw(graph, false, &cuts).1.iter().position(|&w| w > budget) else { return Some(cuts) };
         cuts.truncate(r);
-        // The latest cut after which this row fits.
         let fits = |j: usize| draw(graph, false, &[&cuts[..], &[j]].concat()).1[r] <= budget;
-        let (mut lo, mut hi, mut best) = (cuts.last().map_or(0, |c| c + 1), n, None);
+        // A row holds at least one layer.
+        let first = cuts.last().map_or(1, |c| c + 1);
+        let (mut lo, mut hi, mut latest) = (first, n, None);
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if mid > 0 && fits(mid) {
-                (best, lo) = (Some(mid), mid + 1);
+            if fits(mid) {
+                (latest, lo) = (Some(mid), mid + 1);
             } else {
                 hi = mid;
             }
         }
-        cuts.push(best?);
+        let latest = latest?;
+        // A shorter row is no wider, so it fits too.
+        cuts.push((latest.saturating_sub(1).max(first)..=latest).rev().min_by_key(|&j| cost(j)).unwrap_or(latest));
     }
     None
 }

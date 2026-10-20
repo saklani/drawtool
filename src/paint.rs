@@ -163,7 +163,7 @@ impl Painter {
     }
 
     /// Top-left and bottom-right of everything drawn.
-    fn bounds(&self) -> Option<(Pt, Pt)> {
+    pub(crate) fn bounds(&self) -> Option<(Pt, Pt)> {
         let cells = self.glyphs.keys().chain(self.lines.iter().flat_map(HashMap::keys));
         let (xs, ys): (Vec<i64>, Vec<i64>) = cells.copied().unzip();
         Some(((*xs.iter().min()?, *ys.iter().min()?), (*xs.iter().max()?, *ys.iter().max()?)))

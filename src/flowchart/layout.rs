@@ -329,14 +329,15 @@ struct Layout {
 /// Render a parsed graph as text. `direction` overrides the graph's own.
 #[must_use]
 pub fn render(graph: &Graph, direction: Option<Direction>) -> String {
-    draw(graph, direction.unwrap_or(graph.direction) == Direction::TD, &[])
+    draw(graph, direction.unwrap_or(graph.direction) == Direction::TD, &[]).0
 }
 
 /// Lay out and paint `graph`, cut into rows before each layer in `cuts`
 /// (layers as [`layers`] numbers them; left to right only).
-pub(crate) fn draw(graph: &Graph, td: bool, cuts: &[usize]) -> String {
+/// The drawing, and how wide each of its rows is.
+pub(crate) fn draw(graph: &Graph, td: bool, cuts: &[usize]) -> (String, Vec<i64>) {
     if graph.g.node_count() == 0 {
-        return String::new();
+        return (String::new(), vec![0]);
     }
     let mut l = Layout::new(graph, td, cuts);
     l.lanes();
@@ -345,115 +346,13 @@ pub(crate) fn draw(graph: &Graph, td: bool, cuts: &[usize]) -> String {
     l.place();
     l.ports();
     l.tracks();
-    l.paint().finish()
-}
-
-/// Upper bounds on a left-to-right drawing's length, per layer of
-/// [`layers`], to choose where to cut it into rows without laying it out:
-/// a channel never needs more tracks than it has segments.
-pub(crate) struct Measure {
-    /// Per layer: its band, and the channel after it.
-    band: Vec<i64>,
-    chan: Vec<i64>,
-    /// Per layer: segments in the channel after it; whether a frame starts
-    /// or ends at it; whether a box in it loops back to itself.
-    segs: Vec<i64>,
-    starts: Vec<bool>,
-    ends: Vec<bool>,
-    looped: Vec<bool>,
-    /// For a cut before each layer: the lines that would wrap, and the
-    /// frames it would split.
-    wraps: Vec<usize>,
-    split: Vec<usize>,
-    /// Top to bottom: about how wide the widest layer is.
-    pub td_width: i64,
-}
-
-impl Measure {
-    pub(crate) fn layers(&self) -> usize {
-        self.band.len()
-    }
-
-    /// What cutting before layer `i` costs: one per line wrapping, three per
-    /// frame split in two.
-    pub(crate) fn cost(&self, i: usize) -> usize {
-        self.wraps[i] + 3 * self.split[i]
-    }
-
-    /// The most a row of layers `i..j` can take along the flow.
-    pub(crate) fn row(&self, i: usize, j: usize) -> i64 {
-        let frame = |on: bool| if on { FRAME } else { 0 };
-        let split = |k: usize| FRAME * self.split[k] as i64;
-        // Wrap lines' columns, the channel out of the entries, and frames reopening.
-        let start = if i == 0 {
-            frame(self.starts[0])
-        } else {
-            (2 * self.wraps[i] as i64 - 1).max(0) + 2 + self.segs[i - 1] + frame(self.starts[i]) + split(i)
-        };
-        let body = (i..j).map(|k| self.band[k]).sum::<i64>() + (i..j - 1).map(|k| self.chan[k]).sum::<i64>();
-        let end = if j < self.layers() {
-            self.chan[j - 1] + split(j) + (2 * self.wraps[j] as i64 - 1).max(0)
-        } else {
-            frame(self.ends[j - 1]) + i64::from(self.looped[j - 1])
-        };
-        start + body + end
-    }
-}
-
-/// Measure `graph` for cutting into rows (left to right) or for its width
-/// (top down).
-pub(crate) fn measure(graph: &Graph, td: bool) -> Measure {
-    let mut l = Layout::new(graph, td, &[]);
-    l.lanes();
-    l.sizes();
-    let n = l.layers.len();
-    let frames: Vec<(usize, usize, usize)> = l.frames().collect();
-    let starts: Vec<bool> = (0..n).map(|k| frames.iter().any(|f| f.1 == k)).collect();
-    let ends: Vec<bool> = (0..n).map(|k| frames.iter().any(|f| f.2 == k)).collect();
-    let segs: Vec<i64> = (0..n).map(|k| l.segs.iter().filter(|s| s.chan == k).count() as i64).collect();
-    let chan = (0..n).map(|k| {
-        let head = l.segs.iter().any(|s| s.chan == k && s.tail);
-        let next_starts = starts.get(k + 1).copied().unwrap_or(false);
-        let frame = |on: bool| if on { FRAME } else { 0 };
-        1 + i64::from(head) + frame(ends[k]) + segs[k] + frame(next_starts) + 1
-    });
-    // Cut before layer k: one line per place the channel's segments end (by style).
-    let wraps = (0..n).map(|k| {
-        let into: HashSet<(usize, Style)> =
-            l.segs.iter().filter(|s| k > 0 && s.chan == k - 1).map(|s| (s.to.node, s.style)).collect();
-        into.len()
-    });
-    let looped = (0..n).map(|k| l.layers[k].iter().flat_map(|&v| &l.nodes[v].boxes).any(|&b| l.boxes[b].looped.is_some()));
-    // Top down: each lane packed tight, pushed clear of the lanes beside it as placement does.
-    let packed = |r: usize| {
-        let row = |lay: &Vec<usize>| {
-            let members: Vec<usize> = lay.iter().copied().filter(|&v| l.lane_of[v] == r).collect();
-            (members.iter().enumerate()).map(|(i, &v)| l.nodes[v].csize + l.space(v, members.get(i + 1))).sum::<i64>()
-        };
-        l.layers.iter().map(row).max().unwrap_or(0)
-    };
-    let margin = |lane: &Lane| FRAME * i64::from(lane.group.is_some());
-    let mut lane_end: Vec<i64> = vec![];
-    for (r, lane) in l.lanes.iter().enumerate() {
-        let start = (l.lanes.iter().zip(&lane_end))
-            .filter(|(q, _)| overlaps((q.first, q.last), (lane.first, lane.last)))
-            .map(|(q, &end)| end + 1 + l.gap + margin(q) + margin(lane))
-            .max()
-            .unwrap_or(margin(lane));
-        lane_end.push(start + packed(r) - 1);
-    }
-    let td_width = (l.lanes.iter().zip(&lane_end)).map(|(lane, &end)| end + 1 + margin(lane)).max().unwrap_or(0);
-    Measure {
-        band: (0..n).map(|k| l.band_len(k)).collect(),
-        chan: chan.collect(),
-        segs,
-        starts,
-        ends,
-        looped: looped.collect(),
-        wraps: wraps.collect(),
-        split: (0..n).map(|k| frames.iter().filter(|f| f.1 < k && k <= f.2).count()).collect(),
-        td_width,
-    }
+    let spans = l.row_span.clone();
+    let p = l.paint();
+    let (text, top) = (p.finish(), p.bounds().map_or(0, |b| b.0 .1));
+    let lines: Vec<i64> = text.lines().map(width).collect();
+    let row = |&(a, b): &(i64, i64)| (a..=b).filter_map(|y| lines.get((y - top) as usize)).copied().max().unwrap_or(0);
+    let widths = if td { vec![lines.iter().copied().max().unwrap_or(0)] } else { spans.iter().map(row).collect() };
+    (text, widths)
 }
 
 impl Layout {

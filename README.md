@@ -72,10 +72,9 @@ text:
    ╰─────────────╯  └────────┘
 ```
 
-When several edges cross the same break, each gets its own line, nested so they never cross;
-breaks are chosen where few edges cross. As in ELK's graph wrapping, where to break and how
-much to wrap labels are decided up front from estimates that never undercount, and the whole
-diagram is then laid out once. If a diagram still can't fit (a single layer wider than the
+When several edges cross the same break, each gets its own line, nested so they never cross.
+Labels are wrapped no more than needed, and each row is as long as fits, found by laying the
+diagram out and measuring it. If a diagram still can't fit (a single layer wider than the
 budget), drawtool prints a `note:` on stderr. Top-down is a mode you choose (`flowchart TD`
 or `-d TD`), never a fallback; it only ever wraps labels.
 
